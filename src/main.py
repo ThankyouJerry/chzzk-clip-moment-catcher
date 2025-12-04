@@ -19,8 +19,8 @@ def main():
     app = QApplication(sys.argv)
     
     # Set application metadata
-    app.setApplicationName("Chzzk Chat Analyzer")
-    app.setOrganizationName("ChzzkChatAnalyzer")
+    app.setApplicationName("Chzzk Clip Moment Catcher")
+    app.setOrganizationName("ChzzkClipMomentCatcher")
     app.setApplicationVersion("1.0.0")
     
     # Apply stylesheet

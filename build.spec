@@ -46,7 +46,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='ChzzkChatAnalyzer',
+    name='ChzzkClipMomentCatcher',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -67,14 +67,14 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='ChzzkChatAnalyzer',
+    name='ChzzkClipMomentCatcher',
 )
 
 app = BUNDLE(
     coll,
-    name='ChzzkChatAnalyzer.app',
+    name='ChzzkClipMomentCatcher.app',
     icon=None,
-    bundle_identifier='com.chzzkchatanalyzer.app',
+    bundle_identifier='com.chzzkclipmomentcatcher.app',
     info_plist={
         'NSPrincipalClass': 'NSApplication',
         'NSHighResolutionCapable': 'True',

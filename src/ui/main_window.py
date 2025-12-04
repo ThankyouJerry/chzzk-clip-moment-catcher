@@ -55,7 +55,7 @@ class MainWindow(QMainWindow):
     
     def init_ui(self):
         """Initialize the user interface"""
-        self.setWindowTitle("치지직 채팅 분석기")
+        self.setWindowTitle("치지직 클립 모먼트 캐처")
         self.setGeometry(100, 100, 1200, 800)
         
         # Central widget
@@ -68,7 +68,7 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(20, 20, 20, 20)
         
         # Title
-        title_label = QLabel("치지직 채팅 분석기")
+        title_label = QLabel("치지직 클립 모먼트 캐처")
         title_label.setObjectName("titleLabel")
         main_layout.addWidget(title_label)
         
