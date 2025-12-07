@@ -4,14 +4,166 @@
 
 치지직 방송의 하이라이트 순간을 찾아주는 도구입니다. CSV 채팅 데이터를 분석하여 키워드 빈도를 추적하고, 프리미어 프로 마커로 내보내어 편집 시 하이라이트 구간을 쉽게 찾을 수 있습니다.
 
-## 다운로드
+## 📥 다운로드 및 설치
 
-최신 릴리즈에서 실행 파일을 다운로드하세요:
+### 방법 1: Python으로 실행 (권장)
 
-- **Windows**: `ChzzkClipMomentCatcher-Windows.zip`
-- **macOS**: `ChzzkClipMomentCatcher-macOS.zip`
+Python이 설치되어 있다면 소스 코드를 직접 실행할 수 있습니다.
 
-[📥 최신 릴리즈 다운로드](https://github.com/YOUR_USERNAME/chzzk-clip-moment-catcher/releases/latest)
+#### 1. Python 설치 확인
+
+```bash
+python3 --version
+# 또는
+python --version
+```
+
+Python 3.8 이상이 필요합니다. 없다면 [python.org](https://www.python.org/downloads/)에서 다운로드하세요.
+
+#### 2. 저장소 복제
+
+```bash
+git clone https://github.com/SamKSH/chzzk-clip-moment-catcher.git
+cd chzzk-clip-moment-catcher
+```
+
+또는 ZIP 다운로드:
+1. https://github.com/SamKSH/chzzk-clip-moment-catcher 접속
+2. 녹색 "Code" 버튼 → "Download ZIP"
+3. 압축 해제 후 터미널에서 해당 폴더로 이동
+
+#### 3. 의존성 설치
+
+```bash
+pip3 install -r requirements.txt
+# 또는
+pip install -r requirements.txt
+```
+
+**필요한 패키지:**
+- PyQt6 (GUI 프레임워크)
+- pandas (데이터 처리)
+- matplotlib (그래프 생성)
+- wordcloud (워드클라우드 생성)
+- Pillow (이미지 처리)
+
+#### 4. 실행
+
+```bash
+python3 src/main.py
+# 또는
+python src/main.py
+```
+
+---
+
+### 방법 2: 실행 파일 사용
+
+Python 설치 없이 바로 사용하고 싶다면:
+
+1. [Releases](https://github.com/SamKSH/chzzk-clip-moment-catcher/releases) 페이지 접속
+2. 최신 버전에서 OS에 맞는 파일 다운로드
+   - **macOS**: `ChzzkClipMomentCatcher-macOS.zip`
+   - **Windows**: `ChzzkClipMomentCatcher-Windows.zip` (GitHub Actions로 자동 빌드)
+3. 압축 해제 후 실행
+
+**macOS 보안 경고 해결:**
+```bash
+# 터미널에서 실행
+xattr -cr ChzzkClipMomentCatcher.app
+```
+
+또는 `시스템 환경설정` → `보안 및 개인 정보 보호` → `확인 없이 열기`
+
+---
+
+## 🎯 사용 방법
+
+### 1. CSV 파일 준비
+
+치지직 채팅 CSV 파일이 필요합니다. 
+
+**치지직 채팅 내보내기 확장프로그램 사용:**
+1. [Chzzk Chat Exporter](https://github.com/SamKSH/chzzk-chat-exporter) 설치
+2. 치지직 VOD 페이지에서 채팅 수집
+3. CSV로 내보내기
+
+**CSV 형식:**
+```csv
+Timestamp,User ID,Message
+2025-12-05T07:30:00.000Z,user123,안녕하세요!
+2025-12-05T07:30:05.123Z,user456,ㅋㅋㅋㅋ
+```
+
+### 2. 프로그램 실행
+
+```bash
+python3 src/main.py
+```
+
+### 3. CSV 파일 로드
+
+1. **"파일 선택"** 버튼 클릭
+2. 치지직에서 export한 CSV 파일 선택
+3. 파일이 로드되면 상태 표시줄에 메시지 수 표시
+
+### 4. 키워드 분석
+
+1. **검색할 키워드 입력**
+   - 예: `ㅋㅋ`, `고키겡요`, `??`, `대박`, `와`
+   - 정규표현식 특수문자 지원 (?, *, + 등)
+
+2. **시간 간격 설정** (분 단위)
+   - 기본값: 1분
+   - 추천: 1-5분 (영상 길이에 따라 조정)
+
+3. **"키워드 분석"** 버튼 클릭
+
+4. **결과 확인**
+   - 그래프로 시간대별 키워드 빈도 표시
+   - 가장 많이 언급된 시간대 확인
+
+### 5. 프리미어 프로 마커 내보내기
+
+1. 키워드 분석 후 **"프리미어 마커 내보내기"** 버튼 클릭
+2. 저장 위치 선택
+3. CSV 파일 생성됨
+
+**프리미어 프로에서 사용:**
+1. Adobe Premiere Pro 열기
+2. 타임라인 우클릭 → **"Import Markers"**
+3. 내보낸 CSV 파일 선택
+4. 타임라인에 마커가 자동으로 추가됨
+
+### 6. 워드클라우드 생성
+
+1. **"워드클라우드 생성"** 버튼 클릭
+2. 전체 채팅 내용을 분석하여 워드클라우드 표시
+3. (선택) **"워드클라우드 저장"** 버튼으로 PNG 이미지 저장
+
+---
+
+## 💡 사용 팁
+
+### 효과적인 키워드 선택
+
+- **반응 키워드**: `ㅋㅋ`, `ㅎㅎ`, `ㄷㄷ` - 웃긴 순간 찾기
+- **놀람 키워드**: `와`, `헐`, `대박` - 놀라운 순간 찾기
+- **의문 키워드**: `??`, `뭐`, `왜` - 혼란스러운 순간 찾기
+- **칭찬 키워드**: `고키겡요`, `굿`, `잘` - 잘한 순간 찾기
+
+### 시간 간격 설정
+
+- **짧은 영상 (10-30분)**: 1분 간격
+- **중간 영상 (30-60분)**: 2-3분 간격
+- **긴 영상 (1시간 이상)**: 5분 간격
+
+### 여러 키워드 비교
+
+1. 첫 번째 키워드 분석
+2. 스크린샷 또는 메모
+3. 두 번째 키워드 분석
+4. 결과 비교하여 최고의 순간 찾기
 
 ## 주요 기능
 
@@ -52,65 +204,6 @@
 1. 워드클라우드 생성
 2. 방송의 주요 키워드 확인
 3. 워드클라우드 이미지를 썸네일에 활용
-
-## 설치 및 실행
-
-### 방법 1: 실행 파일 사용 (권장)
-
-1. [릴리즈 페이지](https://github.com/YOUR_USERNAME/chzzk-clip-moment-catcher/releases)에서 OS에 맞는 파일 다운로드
-2. 압축 해제
-3. 실행 파일 실행
-   - **Windows**: `ChzzkClipMomentCatcher.exe`
-   - **macOS**: `ChzzkClipMomentCatcher.app`
-
-### 방법 2: Python으로 직접 실행
-
-```bash
-# 저장소 클론
-git clone https://github.com/YOUR_USERNAME/chzzk-clip-moment-catcher.git
-cd chzzk-clip-moment-catcher
-
-# 의존성 설치
-pip install -r requirements.txt
-
-# 프로그램 실행
-python src/main.py
-```
-
-## 사용 방법
-
-1. **CSV 파일 로드**
-   - "파일 선택" 버튼 클릭
-   - 치지직에서 export한 CSV 파일 선택
-
-2. **키워드 분석**
-   - 검색할 키워드 입력 (예: "ㅋㅋ", "고키겡요", "??")
-   - 시간 간격 설정 (분 단위, 기본값: 1분)
-   - "키워드 분석" 버튼 클릭
-   - 그래프로 결과 확인
-
-3. **프리미어 마커 내보내기**
-   - 키워드 분석 후 "프리미어 마커 내보내기" 버튼 클릭
-   - 저장 위치 선택
-
-4. **워드클라우드 생성**
-   - "워드클라우드 생성" 버튼 클릭
-   - 필요시 "워드클라우드 저장" 버튼으로 이미지 저장
-
-## 치지직 CSV 다운로드 방법
-
-1. 치지직 방송 다시보기 페이지 접속
-2. 채팅 창에서 설정 (⚙️) 클릭
-3. "채팅 다운로드" 또는 "Export Chat" 선택
-4. CSV 형식으로 저장
-
-## 프리미어 프로에서 마커 사용하기
-
-1. Adobe Premiere Pro 열기
-2. 프로젝트 패널에서 타임라인 우클릭
-3. "Import Markers" 선택
-4. 내보낸 CSV 파일 선택
-5. 타임라인에 마커가 자동으로 추가됨
 
 ## 기술 스택
 
