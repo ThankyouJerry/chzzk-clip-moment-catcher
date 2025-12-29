@@ -23,12 +23,12 @@ Python 3.8 이상이 필요합니다. 없다면 [python.org](https://www.python.
 #### 2. 저장소 복제
 
 ```bash
-git clone https://github.com/SamKSH/chzzk-clip-moment-catcher.git
+git clone https://github.com/ThankyouJerry/chzzk-clip-moment-catcher.git
 cd chzzk-clip-moment-catcher
 ```
 
 또는 ZIP 다운로드:
-1. https://github.com/SamKSH/chzzk-clip-moment-catcher 접속
+1. https://github.com/ThankyouJerry/chzzk-clip-moment-catcher 접속
 2. 녹색 "Code" 버튼 → "Download ZIP"
 3. 압축 해제 후 터미널에서 해당 폴더로 이동
 
@@ -61,7 +61,7 @@ python src/main.py
 
 Python 설치 없이 바로 사용하고 싶다면:
 
-1. [Releases](https://github.com/SamKSH/chzzk-clip-moment-catcher/releases) 페이지 접속
+1. [Releases](https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/releases) 페이지 접속
 2. 최신 버전에서 OS에 맞는 파일 다운로드
    - **macOS**: `ChzzkClipMomentCatcher-macOS.zip`
    - **Windows**: `ChzzkClipMomentCatcher-Windows.zip` (GitHub Actions로 자동 빌드)
@@ -91,7 +91,7 @@ open ChzzkClipMomentCatcher.app
 
 실행 파일이 계속 문제가 있다면 Python으로 실행하는 것이 가장 확실합니다:
 ```bash
-git clone https://github.com/SamKSH/chzzk-clip-moment-catcher.git
+git clone https://github.com/ThankyouJerry/chzzk-clip-moment-catcher.git
 cd chzzk-clip-moment-catcher
 pip3 install -r requirements.txt
 python3 src/main.py
@@ -111,7 +111,7 @@ GitHub Release에서 "로컬 빌드" 태그가 있는 버전을 다운로드하�
 치지직 채팅 CSV 파일이 필요합니다. 
 
 **치지직 채팅 내보내기 확장프로그램 사용:**
-1. [Chzzk Chat Exporter](https://github.com/SamKSH/chzzk-chat-exporter) 설치
+1. [Chzzk Chat Exporter](https://github.com/ThankyouJerry/chzzk-chat-exporter) 설치
 2. 치지직 VOD 페이지에서 채팅 수집
 3. CSV로 내보내기
 
