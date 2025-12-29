@@ -18,6 +18,7 @@ import os
 
 from core.analyzer import ChatAnalyzer
 from core.wordcloud_gen import WordCloudGenerator
+from core.sentiment_analyzer import SentimentAnalyzer
 
 
 # Configure Korean font for matplotlib
@@ -49,6 +50,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.analyzer = ChatAnalyzer()
         self.wordcloud_gen = WordCloudGenerator()
+        self.sentiment_analyzer = SentimentAnalyzer()
         self.current_file = None
         
         self.init_ui()
@@ -83,6 +85,10 @@ class MainWindow(QMainWindow):
         # Keyword analysis group
         keyword_group = self.create_keyword_group()
         controls_layout.addWidget(keyword_group, 1)
+        
+        # Sentiment analysis group
+        sentiment_group = self.create_sentiment_group()
+        controls_layout.addWidget(sentiment_group, 1)
         
         # Wordcloud group
         wordcloud_group = self.create_wordcloud_group()
@@ -142,6 +148,42 @@ class MainWindow(QMainWindow):
         export_btn = QPushButton("프리미어 마커 내보내기")
         export_btn.setObjectName("secondaryButton")
         export_btn.clicked.connect(self.export_premiere_markers)
+        layout.addWidget(export_btn)
+        
+        layout.addStretch()
+        group.setLayout(layout)
+        return group
+    
+    def create_sentiment_group(self) -> QGroupBox:
+        """Create sentiment analysis group"""
+        group = QGroupBox("분위기 분석")
+        layout = QVBoxLayout()
+        layout.setSpacing(12)
+        
+        # Interval input
+        interval_layout = QHBoxLayout()
+        interval_layout.addWidget(QLabel("시간 간격 (분):"))
+        self.sentiment_interval_input = QLineEdit("1")
+        self.sentiment_interval_input.setMaximumWidth(100)
+        interval_layout.addWidget(self.sentiment_interval_input)
+        interval_layout.addStretch()
+        layout.addLayout(interval_layout)
+        
+        # Analyze button
+        analyze_btn = QPushButton("분위기 분석")
+        analyze_btn.clicked.connect(self.analyze_sentiment)
+        layout.addWidget(analyze_btn)
+        
+        # Find changes button
+        changes_btn = QPushButton("변화 지점 찾기")
+        changes_btn.setObjectName("secondaryButton")
+        changes_btn.clicked.connect(self.find_mood_changes)
+        layout.addWidget(changes_btn)
+        
+        # Export button
+        export_btn = QPushButton("분위기 마커 내보내기")
+        export_btn.setObjectName("secondaryButton")
+        export_btn.clicked.connect(self.export_mood_markers)
         layout.addWidget(export_btn)
         
         layout.addStretch()
@@ -418,3 +460,190 @@ class MainWindow(QMainWindow):
                 )
             except Exception as e:
                 QMessageBox.critical(self, "오류", f"저장 실패:\n{str(e)}")
+    def analyze_sentiment(self):
+        """Analyze chat sentiment over time"""
+        if self.analyzer.df is None:
+            QMessageBox.warning(self, "경고", "먼저 CSV 파일을 로드하세요.")
+            return
+        
+        try:
+            interval = float(self.sentiment_interval_input.text())
+        except ValueError:
+            QMessageBox.critical(self, "오류", "올바른 시간 간격을 입력하세요.")
+            return
+        
+        try:
+            # Prepare data with clean messages
+            if 'clean_message' not in self.analyzer.df.columns:
+                self.analyzer.df['clean_message'] = self.analyzer.df['메시지'].apply(
+                    self.analyzer.clean_message
+                )
+            
+            # Analyze sentiment timeline
+            timeline = self.sentiment_analyzer.analyze_timeline(
+                self.analyzer.df, interval
+            )
+            
+            if timeline is None or len(timeline) == 0:
+                QMessageBox.warning(self, "경고", "분석할 데이터가 없습니다.")
+                return
+            
+            # Plot sentiment graph
+            self.plot_sentiment_graph(interval)
+            
+            # Calculate statistics
+            avg_sentiment = timeline['sentiment_score'].mean()
+            max_sentiment = timeline['sentiment_score'].max()
+            min_sentiment = timeline['sentiment_score'].min()
+            
+            sentiment_desc = "긍정적" if avg_sentiment > 0.1 else "부정적" if avg_sentiment < -0.1 else "중립적"
+            
+            QMessageBox.information(
+                self,
+                "분석 완료",
+                f"분위기 분석 완료\\n\\n"
+                f"전체 분위기: {sentiment_desc} ({avg_sentiment:.2f})\\n"
+                f"최고 긍정: {max_sentiment:.2f}\\n"
+                f"최저 부정: {min_sentiment:.2f}"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"분석 실패:\\n{str(e)}")
+    
+    def plot_sentiment_graph(self, interval: float):
+        """Plot sentiment analysis graph"""
+        # Clear previous canvas
+        for i in reversed(range(self.canvas_layout.count())):
+            self.canvas_layout.itemAt(i).widget().setParent(None)
+        
+        # Get data
+        timeline = self.sentiment_analyzer.get_sentiment_timeline()
+        if timeline is None or len(timeline) == 0:
+            return
+        
+        # Create figure
+        fig = Figure(figsize=(12, 7), facecolor='#2a2a3e')
+        
+        # Create two subplots
+        ax1 = fig.add_subplot(211)  # Sentiment score
+        ax2 = fig.add_subplot(212)  # Message frequency
+        
+        ax1.set_facecolor('#2a2a3e')
+        ax2.set_facecolor('#2a2a3e')
+        
+        x_positions = range(len(timeline))
+        
+        # Plot 1: Sentiment score (line + area)
+        colors = ['#10b981' if s > 0 else '#ef4444' for s in timeline['sentiment_score']]
+        ax1.fill_between(x_positions, 0, timeline['sentiment_score'], 
+                         alpha=0.3, color='#6366f1')
+        ax1.plot(x_positions, timeline['sentiment_score'], 
+                color='#6366f1', linewidth=2, marker='o', markersize=4)
+        ax1.axhline(y=0, color='#e0e0e0', linestyle='--', alpha=0.3)
+        
+        ax1.set_ylabel('감정 점수', color='#e0e0e0', fontsize=11)
+        ax1.set_title(f'채팅 분위기 분석 ({interval}분 간격)', 
+                     color='#e0e0e0', fontsize=14, fontweight='bold', pad=15)
+        ax1.tick_params(axis='both', colors='#e0e0e0', labelsize=9)
+        ax1.set_ylim(-1.1, 1.1)
+        ax1.grid(axis='y', alpha=0.2, color='#e0e0e0', linestyle='--', linewidth=0.5)
+        
+        # Plot 2: Message frequency (bar)
+        ax2.bar(x_positions, timeline['message_count'], 
+               color='#8b5cf6', alpha=0.7, width=0.8)
+        
+        # Set x-axis labels for both plots
+        num_labels = len(timeline)
+        if num_labels > 30:
+            step = num_labels // 20
+        elif num_labels > 15:
+            step = 2
+        else:
+            step = 1
+        
+        tick_positions = list(range(0, num_labels, step))
+        tick_labels = [timeline['time_str'].iloc[i] for i in tick_positions]
+        
+        ax1.set_xticks(tick_positions)
+        ax1.set_xticklabels([])  # Hide x labels on top plot
+        
+        ax2.set_xticks(tick_positions)
+        ax2.set_xticklabels(tick_labels, rotation=45, ha='right')
+        ax2.set_xlabel('시간', color='#e0e0e0', fontsize=11)
+        ax2.set_ylabel('메시지 수', color='#e0e0e0', fontsize=11)
+        ax2.tick_params(axis='both', colors='#e0e0e0', labelsize=9)
+        ax2.grid(axis='y', alpha=0.2, color='#e0e0e0', linestyle='--', linewidth=0.5)
+        
+        # Style spines
+        for ax in [ax1, ax2]:
+            ax.spines['bottom'].set_color('#3a3a4e')
+            ax.spines['left'].set_color('#3a3a4e')
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+        
+        fig.tight_layout(pad=2.0)
+        
+        # Create canvas
+        canvas = FigureCanvasQTAgg(fig)
+        self.canvas_layout.addWidget(canvas)
+    
+    def find_mood_changes(self):
+        """Find and display mood change points"""
+        if self.sentiment_analyzer.get_sentiment_timeline() is None:
+            QMessageBox.warning(self, "경고", "먼저 분위기 분석을 수행하세요.")
+            return
+        
+        try:
+            # Detect mood changes
+            changes = self.sentiment_analyzer.detect_mood_changes(
+                threshold=0.3, min_change=0.2
+            )
+            
+            if not changes:
+                QMessageBox.information(
+                    self, "결과", 
+                    "뚜렷한 분위기 변화 지점을 찾지 못했습니다."
+                )
+                return
+            
+            # Show top 5 changes
+            top_changes = changes[:5]
+            message = "주요 분위기 변화 지점:\\n\\n"
+            
+            for i, change in enumerate(top_changes, 1):
+                message += f"{i}. {change['time']} - {change['description']}\\n"
+                message += f"   변화량: {change['change']:+.2f}\\n\\n"
+            
+            QMessageBox.information(self, "분위기 변화 지점", message)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"분석 실패:\\n{str(e)}")
+    
+    def export_mood_markers(self):
+        """Export mood change markers for Premiere Pro"""
+        if not self.sentiment_analyzer.get_mood_changes():
+            QMessageBox.warning(self, "경고", "먼저 변화 지점을 찾아주세요.")
+            return
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "분위기 마커 저장",
+            "mood_markers.csv",
+            "CSV Files (*.csv)"
+        )
+        
+        if file_path:
+            try:
+                success = self.sentiment_analyzer.export_mood_markers(
+                    file_path, top_n=10
+                )
+                
+                if success:
+                    QMessageBox.information(
+                        self,
+                        "성공",
+                        f"분위기 마커를 저장했습니다:\\n{file_path}"
+                    )
+                else:
+                    QMessageBox.warning(self, "경고", "마커 생성 실패")
+            except Exception as e:
+                QMessageBox.critical(self, "오류", f"저장 실패:\\n{str(e)}")

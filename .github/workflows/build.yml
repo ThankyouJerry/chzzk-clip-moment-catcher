@@ -72,7 +72,7 @@ jobs:
             
             ### Python 실행 (모든 플랫폼)
             ```bash
-            git clone https://github.com/SamKSH/chzzk-clip-moment-catcher.git
+            git clone https://github.com/ThankyouJerry/chzzk-clip-moment-catcher.git
             cd chzzk-clip-moment-catcher
             pip install -r requirements.txt
             python src/main.py

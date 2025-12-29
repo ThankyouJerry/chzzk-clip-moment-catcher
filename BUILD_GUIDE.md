@@ -37,7 +37,7 @@ git add .
 git commit -m "Initial commit: Chzzk Clip Moment Catcher v1.0.0"
 
 # GitHub 저장소 연결
-git remote add origin https://github.com/SamKSH/chzzk-clip-moment-catcher.git
+git remote add origin https://github.com/ThankyouJerry/chzzk-clip-moment-catcher.git
 git branch -M main
 git push -u origin main
 ```
@@ -54,13 +54,13 @@ git push origin v1.0.0
 
 ### 3. GitHub Actions 확인
 
-1. https://github.com/SamKSH/chzzk-clip-moment-catcher/actions 접속
+1. https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/actions 접속
 2. "Build and Release" 워크플로우 실행 확인
 3. 완료되면 자동으로 Release 생성됨
 
 ### 4. Release 확인
 
-https://github.com/SamKSH/chzzk-clip-moment-catcher/releases
+https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/releases
 
 자동으로 생성된 Release에 두 파일이 첨부됨:
 - `ChzzkClipMomentCatcher-Windows.zip`
@@ -72,7 +72,7 @@ https://github.com/SamKSH/chzzk-clip-moment-catcher/releases
 
 Tag 없이 수동으로 실행하려면:
 
-1. https://github.com/SamKSH/chzzk-clip-moment-catcher/actions
+1. https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/actions
 2. "Build and Release" 선택
 3. "Run workflow" 클릭
 4. Artifacts에서 다운로드
