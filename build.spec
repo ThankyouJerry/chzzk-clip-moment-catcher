@@ -18,7 +18,10 @@ a = Analysis(
     ['src/main.py'],
     pathex=[src_path],
     binaries=matplotlib_binaries + pillow_binaries + wordcloud_binaries,
-    datas=matplotlib_datas + pillow_datas + wordcloud_datas,
+    datas=matplotlib_datas + pillow_datas + wordcloud_datas + [
+        ('src/ui', 'ui'),
+        ('src/core', 'core'),
+    ],
     hiddenimports=[
         'PyQt6.QtCore',
         'PyQt6.QtGui',
