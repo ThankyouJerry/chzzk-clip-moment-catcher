@@ -57,13 +57,14 @@ class ChatAnalyzer:
         
         return message.strip()
     
-    def analyze_keyword(self, keyword: str, interval_minutes: float) -> Dict:
+    def analyze_keyword(self, keyword: str, interval_minutes: float, sensitivity: float = 2.0) -> Dict:
         """
-        Analyze keyword frequency over time
+        Analyze keyword frequency over time with Z-Score based filtering
         
         Args:
             keyword: Keyword to search for
             interval_minutes: Time interval in minutes
+            sensitivity: Z-Score threshold (1.0=low, 2.0=normal, 3.0=high)
             
         Returns:
             Dictionary with analysis results
@@ -84,7 +85,8 @@ class ChatAnalyzer:
             return {
                 'total_count': 0,
                 'peak_time': None,
-                'timeline': []
+                'timeline': [],
+                'sensitivity': sensitivity
             }
         
         # Group by time intervals
@@ -97,21 +99,107 @@ class ChatAnalyzer:
         # Count keywords per interval
         keyword_counts = keyword_df.groupby('time_bin').size()
         
-        # Store results
+        # Z-Score based filtering
+        mean = keyword_counts.mean()
+        std = keyword_counts.std()
+        
+        # Avoid division by zero
+        if std == 0:
+            threshold = mean
+        else:
+            threshold = mean + (sensitivity * std)
+        
+        # Filter significant moments
+        significant_indices = keyword_counts[keyword_counts >= threshold].index
+        
+        # Store results (only significant moments)
         self.keyword_results = pd.DataFrame({
-            'time_seconds': keyword_counts.index.astype(int),
-            'count': keyword_counts.values
+            'time_seconds': significant_indices.astype(int),
+            'count': keyword_counts[significant_indices].values
         })
         self.keyword_results['time_str'] = self.keyword_results['time_seconds'].apply(self.seconds_to_time)
         
         # Find peak time
-        peak_idx = self.keyword_results['count'].idxmax()
-        peak_time = self.keyword_results.loc[peak_idx, 'time_str']
+        if len(self.keyword_results) > 0:
+            peak_idx = self.keyword_results['count'].idxmax()
+            peak_time = self.keyword_results.loc[peak_idx, 'time_str']
+        else:
+            peak_time = None
         
         return {
             'total_count': len(keyword_df),
             'peak_time': peak_time,
-            'timeline': self.keyword_results.to_dict('records')
+            'timeline': self.keyword_results.to_dict('records'),
+            'sensitivity': sensitivity,
+            'threshold': threshold,
+            'mean': mean,
+            'std': std
+        }
+    
+    def analyze_chat_density(self, interval_minutes: float, sensitivity: float = 2.0) -> Dict:
+        """
+        Analyze chat density (message frequency) over time to find highlight moments
+        
+        Args:
+            interval_minutes: Time interval in minutes
+            sensitivity: Z-Score threshold (1.0=low, 2.0=normal, 3.0=high)
+            
+        Returns:
+            Dictionary with analysis results
+        """
+        if self.df is None:
+            raise ValueError("No CSV loaded")
+        
+        # Convert time to seconds if not already done
+        if 'seconds' not in self.df.columns:
+            self.df['seconds'] = self.df['재생시간'].apply(self.time_to_seconds)
+        
+        # Group by time intervals
+        interval_seconds = int(interval_minutes * 60)
+        max_seconds = self.df['seconds'].max()
+        time_bins = list(range(0, max_seconds + interval_seconds, interval_seconds))
+        
+        self.df['time_bin'] = pd.cut(self.df['seconds'], bins=time_bins, labels=time_bins[:-1])
+        
+        # Count messages per interval
+        message_counts = self.df.groupby('time_bin').size()
+        
+        # Z-Score based filtering
+        mean = message_counts.mean()
+        std = message_counts.std()
+        
+        # Avoid division by zero
+        if std == 0:
+            threshold = mean
+        else:
+            threshold = mean + (sensitivity * std)
+        
+        # Filter significant moments (chat spikes)
+        significant_indices = message_counts[message_counts >= threshold].index
+        
+        # Store results (only significant moments)
+        self.keyword_results = pd.DataFrame({
+            'time_seconds': significant_indices.astype(int),
+            'count': message_counts[significant_indices].values
+        })
+        self.keyword_results['time_str'] = self.keyword_results['time_seconds'].apply(self.seconds_to_time)
+        
+        # Find peak time
+        if len(self.keyword_results) > 0:
+            peak_idx = self.keyword_results['count'].idxmax()
+            peak_time = self.keyword_results.loc[peak_idx, 'time_str']
+        else:
+            peak_time = None
+        
+        return {
+            'total_count': len(self.df),
+            'peak_time': peak_time,
+            'timeline': self.keyword_results.to_dict('records'),
+            'sensitivity': sensitivity,
+            'threshold': threshold,
+            'mean': mean,
+            'std': std,
+            'spike_count': len(self.keyword_results)
         }
     
     def get_keyword_timeline(self) -> Optional[pd.DataFrame]:
@@ -147,6 +235,46 @@ class ChatAnalyzer:
         
         markers_df = pd.DataFrame(markers)
         markers_df.to_csv(output_path, index=False, encoding='utf-8-sig')
+        return True
+    
+    def export_edl(self, output_path: str, keyword: str) -> bool:
+        """
+        Export EDL (Edit Decision List) for DaVinci Resolve / Final Cut Pro
+        
+        Args:
+            output_path: Output file path
+            keyword: Keyword name for markers
+            
+        Returns:
+            True if successful
+        """
+        if self.keyword_results is None:
+            return False
+        
+        # EDL format:
+        # 001  AX       V     C        00:00:10:00 00:00:10:00 00:00:10:00 00:00:10:00
+        # * FROM CLIP NAME: marker_name
+        
+        edl_lines = []
+        edl_lines.append("TITLE: Chzzk Chat Markers")
+        edl_lines.append("FCM: NON-DROP FRAME")
+        edl_lines.append("")
+        
+        for idx, (_, row) in enumerate(self.keyword_results.iterrows(), 1):
+            if row['count'] > 0:
+                # Convert time_str (HH:MM:SS) to timecode (HH:MM:SS:FF)
+                timecode = f"{row['time_str']}:00"
+                
+                # EDL entry
+                edl_lines.append(f"{idx:03d}  AX       V     C        {timecode} {timecode} {timecode} {timecode}")
+                edl_lines.append(f"* FROM CLIP NAME: {keyword} ({row['count']}회)")
+                edl_lines.append(f"* COMMENT: {keyword} 키워드가 {row['count']}번 언급됨")
+                edl_lines.append("")
+        
+        # Write to file
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(edl_lines))
+        
         return True
     
     def get_all_text(self) -> str:

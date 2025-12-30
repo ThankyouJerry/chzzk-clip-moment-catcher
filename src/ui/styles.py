@@ -40,9 +40,9 @@ def get_stylesheet() -> str:
         color: white;
         border: none;
         border-radius: 6px;
-        padding: 10px 20px;
+        padding: 8px 16px;
         font-weight: 600;
-        min-height: 36px;
+        min-height: 32px;
     }}
     
     QPushButton:hover {{
@@ -62,6 +62,8 @@ def get_stylesheet() -> str:
         background-color: {COLORS['surface']};
         color: {COLORS['text']};
         border: 1px solid {COLORS['border']};
+        padding: 6px 12px;
+        min-height: 28px;
     }}
     
     QPushButton#secondaryButton:hover {{
@@ -73,7 +75,7 @@ def get_stylesheet() -> str:
         background-color: {COLORS['surface']};
         border: 2px solid {COLORS['border']};
         border-radius: 6px;
-        padding: 10px 12px;
+        padding: 6px 10px;
         color: {COLORS['text']};
         selection-background-color: {COLORS['primary']};
     }}
@@ -89,9 +91,10 @@ def get_stylesheet() -> str:
     }}
     
     QLabel#titleLabel {{
-        font-size: 16px;
+        font-size: 18px;
         font-weight: 700;
         color: {COLORS['text']};
+        padding: 5px;
     }}
     
     QLabel#subtitleLabel {{
@@ -103,16 +106,16 @@ def get_stylesheet() -> str:
     QGroupBox {{
         background-color: {COLORS['surface']};
         border: 1px solid {COLORS['border']};
-        border-radius: 8px;
-        margin-top: 12px;
-        padding-top: 12px;
+        border-radius: 6px;
+        margin-top: 8px;
+        padding-top: 8px;
         font-weight: 600;
     }}
     
     QGroupBox::title {{
         subcontrol-origin: margin;
         subcontrol-position: top left;
-        padding: 0 8px;
+        padding: 0 6px;
         color: {COLORS['text']};
     }}
     
