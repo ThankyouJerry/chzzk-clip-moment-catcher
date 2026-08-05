@@ -490,14 +490,16 @@ class ChatAnalyzer:
         for event_number, group in enumerate(groups, start=1):
             first_index = group[0]
             last_index = group[-1]
+            event_indices = list(range(first_index, last_index + 1))
             start_seconds = int(timeline.iloc[first_index]["time_seconds"])
+            natural_end = int(timeline.iloc[last_index]["time_seconds"]) + interval_seconds
             end_seconds = min(
                 source_end,
-                int(timeline.iloc[last_index]["time_seconds"]) + interval_seconds,
+                natural_end,
             )
             end_mask = (
                 source_rows["seconds"].le(end_seconds)
-                if end_seconds >= source_end
+                if source_end < natural_end
                 else source_rows["seconds"].lt(end_seconds)
             )
             event_rows = source_rows.loc[
@@ -511,12 +513,12 @@ class ChatAnalyzer:
                 event_rows,
                 count_column=peak_count_column,
             )
-            group_timeline = timeline.iloc[group]
-            count = int(group_timeline["count"].sum())
-            baseline = float(group_timeline["baseline"].mean())
-            threshold = float(group_timeline["threshold"].mean())
-            score = float(group_timeline["score"].max())
-            lift = count / max(baseline * len(group), 1.0)
+            event_timeline = timeline.iloc[event_indices]
+            count = int(event_timeline["count"].sum())
+            baseline = float(event_timeline["baseline"].mean())
+            threshold = float(event_timeline["threshold"].mean())
+            score = float(event_timeline["score"].max())
+            lift = count / max(baseline * len(event_indices), 1.0)
             unique_users = int(event_rows["닉네임"].nunique()) if not event_rows.empty else 0
             if event_rows.empty:
                 top_user_share = 0.0
@@ -529,7 +531,7 @@ class ChatAnalyzer:
                     + 0.35 * min(lift / 3.0, 1.0)
                     + 0.20 * diversity_factor),
             )
-            timeline.loc[group, "event_id"] = event_number
+            timeline.loc[event_indices, "event_id"] = event_number
             events.append({
                 "event_id": event_number,
                 "start_seconds": start_seconds,

@@ -89,6 +89,24 @@ def test_custom_emote_only_message_is_kept_as_arousal_evidence():
     assert timeline.iloc[0]["evidence_count"] == 1
 
 
+def test_system_only_timeline_keeps_empty_result_schema():
+    frame = pd.DataFrame([
+        {
+            "seconds": 15.0,
+            "clean_message": "system notice",
+            "is_system": True,
+        }
+    ])
+    analyzer = SentimentAnalyzer()
+
+    timeline = analyzer.analyze_timeline(frame, interval_minutes=1)
+
+    assert timeline.empty
+    assert timeline.columns.tolist() == SentimentAnalyzer.TIMELINE_COLUMNS
+    assert analyzer.get_summary()["message_count"] == 0
+    assert analyzer.detect_mood_changes() == []
+
+
 def test_threshold_is_applied_when_detecting_mood_changes():
     analyzer = SentimentAnalyzer()
     analyzer.sentiment_results = pd.DataFrame([

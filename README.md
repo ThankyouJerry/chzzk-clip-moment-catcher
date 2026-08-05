@@ -1,10 +1,13 @@
 # 치지직 클립 모먼트 캐처
 
+[![Latest release](https://img.shields.io/github/v/release/ThankyouJerry/chzzk-clip-moment-catcher?label=release)](https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/releases/latest)
 [![QA and Build](https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/actions/workflows/build.yml/badge.svg)](https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/actions/workflows/build.yml)
 
 치지직 VOD에서 내보낸 **채팅 CSV만 분석해** 편집 후보 구간을 찾는 로컬 데스크톱 앱입니다. 채팅 급증, 특정 키워드 급증, 정서 방향과 반응 강도를 분석하고 실제 채팅 피크를 기준으로 편집용 프리롤·포스트롤 구간을 제안합니다.
 
 영상·음성을 직접 분석하거나 VOD를 다운로드하지 않습니다. 앱 자체의 모든 분석은 사용자 컴퓨터에서 실행되며 CSV나 채팅 내용이 별도 서버로 전송되지 않습니다. NAVER 또는 CHZZK의 공식·제휴 제품이 아닌 개인 오픈소스 프로젝트입니다.
+
+**[최신 버전 다운로드](https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/releases/latest)**
 
 ## 주요 기능
 
@@ -19,7 +22,7 @@
 
 ## 다운로드
 
-[Releases](https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/releases)에서 운영체제에 맞는 파일을 받습니다.
+[최신 릴리스](https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/releases/latest)에서 운영체제에 맞는 파일을 받습니다.
 
 - Windows: `ChzzkClipMomentCatcher-Windows-x86_64.zip`
 - macOS Apple Silicon: `ChzzkClipMomentCatcher-macOS-arm64.zip`

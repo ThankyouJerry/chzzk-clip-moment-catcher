@@ -13,6 +13,18 @@ import pandas as pd
 class SentimentAnalyzer:
     """Separates emotional direction (valence) from reaction strength (arousal)."""
 
+    TIMELINE_COLUMNS = [
+        "time_seconds",
+        "time_str",
+        "sentiment_score",
+        "valence",
+        "arousal",
+        "message_count",
+        "sentiment_message_count",
+        "evidence_count",
+        "coverage",
+    ]
+
     PHRASE_SIGNALS = (
         # Negations and negative compounds must run before their positive roots.
         (r"재미\s*없|재미없|노잼|안\s*(?:웃|재밌|좋)|못\s*(?:웃|즐기)", -0.75, 0.55),
@@ -52,6 +64,15 @@ class SentimentAnalyzer:
         self.sentiment_results = None
         self.mood_changes = []
         self.analysis_metadata = None
+
+    def _set_empty_timeline(self, interval_seconds: Optional[int] = None) -> pd.DataFrame:
+        self.sentiment_results = pd.DataFrame(columns=self.TIMELINE_COLUMNS)
+        self.mood_changes = []
+        self.analysis_metadata = {
+            "interval_seconds": interval_seconds or 0,
+            "message_count": 0,
+        }
+        return self.sentiment_results
 
     def analyze_message(self, message: str) -> float:
         """Return valence for compatibility; neutral/no-evidence text returns 0."""
@@ -142,16 +163,14 @@ class SentimentAnalyzer:
         self, df: pd.DataFrame, interval_minutes: float = 1.0
     ) -> pd.DataFrame:
         if df is None or len(df) == 0:
-            self.reset()
-            return pd.DataFrame()
+            return self._set_empty_timeline()
         if "seconds" not in df or "clean_message" not in df:
             raise ValueError("분위기 분석에 seconds와 clean_message 열이 필요합니다.")
 
         interval_seconds = self._validate_interval(interval_minutes)
         work = df.loc[~df.get("is_system", pd.Series(False, index=df.index)).astype(bool)].copy()
         if work.empty:
-            self.reset()
-            return pd.DataFrame()
+            return self._set_empty_timeline(interval_seconds)
 
         custom_counts = work.get("custom_emote_count", pd.Series(0, index=work.index))
         sentiment_text = work.get("message_raw", work["clean_message"]).astype("string")

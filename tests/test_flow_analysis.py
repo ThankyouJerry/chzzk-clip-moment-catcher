@@ -106,6 +106,57 @@ def test_adjacent_spike_bins_merge_and_marker_uses_raw_peak_time(tmp_path):
     assert event["unique_users"] == 10
 
 
+def test_merged_event_counts_the_gap_bin_used_for_participants_and_confidence(tmp_path):
+    counts = [10, 10, 30, 10, 30, 10, 10]
+    rows = []
+    for bin_index, count in enumerate(counts):
+        for index in range(count):
+            nickname = "gap-only" if bin_index == 3 else f"u{index % 10}"
+            rows.append(row(bin_index * 60 + index, nickname))
+    analyzer = load_rows(tmp_path, rows)
+
+    result = analyzer.analyze_chat_density(1, sensitivity=2)
+
+    assert result["status"] == "ok"
+    assert len(result["events"]) == 1
+    event = result["events"][0]
+    assert event["start_seconds"] == 120
+    assert event["end_seconds"] == 300
+    assert event["count"] == 70
+    assert event["baseline"] == pytest.approx(13.333)
+    assert event["lift"] == pytest.approx(1.75)
+    assert event["unique_users"] == 11
+    assert event["top_user_share"] == pytest.approx(0.143)
+    assert event["confidence"] == pytest.approx(0.826)
+    event_bins = analyzer.get_density_timeline().iloc[2:5]
+    assert event_bins["event_id"].eq(1).all()
+
+
+def test_event_end_at_source_boundary_excludes_the_next_bin_row(tmp_path):
+    counts = [10, 10, 30, 10, 30]
+    rows = []
+    for bin_index, count in enumerate(counts):
+        for index in range(count):
+            nickname = "gap-only" if bin_index == 3 else f"u{index % 10}"
+            rows.append(row(bin_index * 60 + index, nickname))
+    rows.append(row(300, "boundary-only"))
+    analyzer = load_rows(tmp_path, rows)
+
+    result = analyzer.analyze_chat_density(1, sensitivity=3)
+
+    assert result["status"] == "ok"
+    assert len(result["events"]) == 1
+    event = result["events"][0]
+    assert event["start_seconds"] == 120
+    assert event["end_seconds"] == 300
+    assert event["count"] == 70
+    assert event["unique_users"] == 11
+    assert event["top_user_share"] == pytest.approx(0.143)
+    timeline = analyzer.get_density_timeline()
+    assert timeline.iloc[2:5]["event_id"].eq(1).all()
+    assert pd.isna(timeline.iloc[5]["event_id"])
+
+
 def test_actual_peak_uses_half_open_window_and_keyword_occurrence_weights():
     analyzer = ChatAnalyzer()
     keyword_rows = pd.DataFrame({

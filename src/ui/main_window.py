@@ -508,8 +508,12 @@ class MainWindow(QMainWindow):
             "근거 부족" if math.isnan(float(summary_data["valence"]))
             else f"{float(summary_data['valence']):+.2f}"
         )
+        arousal_text = (
+            "근거 부족" if math.isnan(float(summary_data["arousal"]))
+            else f"{float(summary_data['arousal']):.2f}"
+        )
         summary = (
-            f"전체 정서 방향 {valence_text} / 평균 반응 강도 {float(summary_data['arousal']):.2f} / "
+            f"전체 정서 방향 {valence_text} / 평균 반응 강도 {arousal_text} / "
             f"정서 근거 커버리지 {float(summary_data['coverage']):.1%}\n"
             f"분석 채팅 {int(summary_data['message_count']):,}개 / 변화 지점 {len(changes)}개 / 간격 {interval:g}분"
         )

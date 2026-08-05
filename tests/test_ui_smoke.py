@@ -3,8 +3,9 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+import pandas as pd
 from matplotlib.figure import Figure
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QLabel
 
 from ui.main_window import MainWindow
 
@@ -71,3 +72,25 @@ def test_numeric_readers_reject_nonfinite_values(window):
 
     with pytest.raises(ValueError, match="0 이상의 유한한"):
         window._read_nonnegative(window.pre_roll_input, "프리롤")
+
+
+def test_system_only_sentiment_result_renders_without_crashing(window):
+    frame = pd.DataFrame([
+        {
+            "seconds": 15.0,
+            "clean_message": "system notice",
+            "is_system": True,
+        }
+    ])
+    timeline = window.sentiment_analyzer.analyze_timeline(frame, interval_minutes=1)
+
+    window._show_sentiment_result(timeline, interval=1)
+
+    assert window.result_tabs.count() == 1
+    assert window.result_tabs.tabText(0) == "분위기"
+    summary_text = "\n".join(
+        label.text() for label in window.result_tabs.widget(0).findChildren(QLabel)
+    )
+    assert "전체 정서 방향 근거 부족" in summary_text
+    assert "평균 반응 강도 근거 부족" in summary_text
+    assert "nan" not in summary_text.casefold()

@@ -42,8 +42,8 @@ PyInstaller는 실행 중인 운영체제용 패키지만 만들 수 있습니�
 `v`로 시작하는 태그를 푸시하면 테스트와 세 플랫폼 빌드가 모두 성공한 뒤 GitHub Release가 생성됩니다.
 
 ```bash
-git tag v1.2.0
-git push origin v1.2.0
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin vX.Y.Z
 ```
 
 태그는 코드의 `src/version.py` 버전과 일치시켜야 합니다. 태그 생성과 릴리즈 게시는 기능 검증이 끝난 뒤 명시적으로 진행합니다.
