@@ -102,16 +102,8 @@ XML 구조와 프레임 변환은 자동 테스트하지만, 모든 Premiere·Fi
 
 이 분석은 한국어 채팅 휴리스틱이며 영상·음성의 의미를 이해하는 AI 모델이 아닙니다. 풍자, 밈, 스트리머별 은어는 오판할 수 있으므로 편집 전 원본 VOD 확인이 필요합니다.
 
-## 개발 및 테스트
-
-```bash
-python3 -m pip install -r requirements-dev.txt
-QT_QPA_PLATFORM=offscreen python3 -m pytest
-```
-
-GitHub Actions는 Ubuntu, Windows, macOS에서 테스트한 뒤 Windows x86_64와 macOS Intel·Apple Silicon 패키지를 각각 빌드합니다. 자세한 내용은 [BUILD_GUIDE.md](BUILD_GUIDE.md)를 참고하세요.
-
 버전별 수정 내용은 [CHANGELOG.md](CHANGELOG.md)에서 확인할 수 있습니다.
+프로젝트 기여 방법은 [CONTRIBUTING.md](CONTRIBUTING.md)를 참고하세요.
 
 ## 개인정보와 저작권
 
