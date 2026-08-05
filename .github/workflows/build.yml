@@ -1,83 +1,118 @@
-name: Build Windows Only
+name: QA and Build
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14]
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Compile sources
+        run: python -m compileall -q src tests
+      - name: Run tests
+        run: python -m pytest
+
   build-windows:
+    name: Build Windows
+    needs: test
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
-      
+          python-version: "3.12"
+          cache: pip
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
-      
-      - name: Build with PyInstaller
-        run: |
-          pyinstaller build.spec
-      
-      - name: List dist contents
-        run: |
-          dir dist
-      
-      - name: Create ZIP archive
-        run: |
-          Compress-Archive -Path dist\ChzzkClipMomentCatcher\* -DestinationPath ChzzkClipMomentCatcher-Windows.zip
-      
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        run: python -m pip install -r requirements-dev.txt
+      - name: Build application
+        run: python -m PyInstaller --clean --noconfirm build.spec
+      - name: Smoke-check package
+        shell: pwsh
+        run: ./smoke_windows.ps1
+      - name: Create archive
+        shell: pwsh
+        run: Compress-Archive -Path dist\ChzzkClipMomentCatcher\* -DestinationPath ChzzkClipMomentCatcher-Windows-x86_64.zip
+      - uses: actions/upload-artifact@v4
         with:
-          name: ChzzkClipMomentCatcher-Windows
-          path: ChzzkClipMomentCatcher-Windows.zip
+          name: ChzzkClipMomentCatcher-Windows-x86_64
+          path: ChzzkClipMomentCatcher-Windows-x86_64.zip
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS (${{ matrix.arch }})
+    needs: test
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x86_64
+          - runner: macos-14
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Build application
+        run: python -m PyInstaller --clean --noconfirm build.spec
+      - name: Apply ad-hoc signature and verify bundle
+        run: |
+          chmod +x package_macos.sh
+          ./package_macos.sh dist/ChzzkClipMomentCatcher.app ChzzkClipMomentCatcher-macOS-${{ matrix.arch }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ChzzkClipMomentCatcher-macOS-${{ matrix.arch }}
+          path: ChzzkClipMomentCatcher-macOS-${{ matrix.arch }}.zip
+          if-no-files-found: error
 
   release:
-    needs: [build-windows]
+    name: Publish Release
+    needs: [build-windows, build-macos]
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
     steps:
-      - name: Download Windows artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: ChzzkClipMomentCatcher-Windows
-      
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
+          pattern: ChzzkClipMomentCatcher-*
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            ChzzkClipMomentCatcher-Windows.zip
+          generate_release_notes: true
           body: |
-            ## 💬 Chzzk Clip Moment Catcher
-            
-            ### Windows
-            - ChzzkClipMomentCatcher-Windows.zip (자동 빌드)
-            
-            ### macOS
-            - macOS 버전은 기존 Release의 로컬 빌드를 사용하세요
-            - 또는 Python으로 실행 (권장)
-            
-            ### Python 실행 (모든 플랫폼)
-            ```bash
-            git clone https://github.com/ThankyouJerry/chzzk-clip-moment-catcher.git
-            cd chzzk-clip-moment-catcher
-            pip install -r requirements.txt
-            python src/main.py
-            ```
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            Windows x86_64와 macOS Intel/Apple Silicon 빌드입니다.
+
+            macOS 앱은 ad-hoc 서명 빌드이며 Apple 공증은 적용되지 않았습니다. 처음 실행할 때 macOS 보안 확인이 필요할 수 있습니다.
+          files: |
+            ChzzkClipMomentCatcher-Windows-x86_64.zip
+            ChzzkClipMomentCatcher-macOS-x86_64.zip
+            ChzzkClipMomentCatcher-macOS-arm64.zip

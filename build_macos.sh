@@ -1,13 +1,12 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-echo "Building Chzzk Chat Analyzer for macOS..."
+cd "$(dirname "$0")"
+python3 -m pip install -r requirements-dev.txt
+QT_QPA_PLATFORM=offscreen python3 -m pytest
+python3 -m PyInstaller --clean --noconfirm build.spec
+./package_macos.sh \
+  dist/ChzzkClipMomentCatcher.app \
+  dist/ChzzkClipMomentCatcher-macOS-local.zip
 
-# Install dependencies
-echo "Installing dependencies..."
-pip3 install -r requirements.txt
-
-# Build with PyInstaller
-echo "Building application..."
-pyinstaller build.spec
-
-echo "Build complete! Application is in dist/ChzzkChatAnalyzer.app"
+echo "Built dist/ChzzkClipMomentCatcher-macOS-local.zip"

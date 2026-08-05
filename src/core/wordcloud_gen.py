@@ -12,6 +12,10 @@ class WordCloudGenerator:
     
     def __init__(self):
         self.wordcloud: Optional[WordCloud] = None
+
+    def reset(self) -> None:
+        """Discard the image generated for the previous source."""
+        self.wordcloud = None
     
     def get_korean_font(self) -> str:
         """Get Korean font path based on platform"""

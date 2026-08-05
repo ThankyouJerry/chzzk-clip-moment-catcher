@@ -1,17 +1,47 @@
+from __future__ import annotations
+
 """
 Chat Analyzer - Core Analysis Logic
 """
-import pandas as pd
+import csv
+import math
+from pathlib import Path
 import re
-from typing import Optional, Dict, List
+import unicodedata
+from typing import Optional, Dict, List, Sequence
+import xml.etree.ElementTree as ET
+
+import pandas as pd
 
 
 class ChatAnalyzer:
     """Analyzes Chzzk chat CSV files"""
+
+    REQUIRED_COLUMNS = ("재생시간", "닉네임", "메시지")
+    SPLIT_FILE_PATTERN = re.compile(r"^(?P<base>.+)_d_p(?P<part>\d{3})\.csv$", re.IGNORECASE)
+    TIME_PATTERN = re.compile(
+        r"^\s*(?P<hours>\d+):(?P<minutes>[0-5]\d):(?P<seconds>[0-5]\d)"
+        r"(?:\.(?P<fraction>\d{1,3}))?\s*$"
+    )
     
     def __init__(self):
         self.df: Optional[pd.DataFrame] = None
         self.keyword_results: Optional[pd.DataFrame] = None
+        self.density_results: Optional[pd.DataFrame] = None
+        self.keyword_timeline: Optional[pd.DataFrame] = None
+        self.density_timeline: Optional[pd.DataFrame] = None
+        self.keyword_metadata: Optional[Dict] = None
+        self.density_metadata: Optional[Dict] = None
+        self.session_info: Dict = {}
+
+    def reset_results(self) -> None:
+        """Discard every result tied to the previously loaded source."""
+        self.keyword_results = None
+        self.density_results = None
+        self.keyword_timeline = None
+        self.density_timeline = None
+        self.keyword_metadata = None
+        self.density_metadata = None
     
     def load_csv(self, file_path: str) -> int:
         """
@@ -23,271 +53,759 @@ class ChatAnalyzer:
         Returns:
             Number of messages loaded
         """
-        self.df = pd.read_csv(file_path)
+        file_paths = self._discover_csv_parts(Path(file_path))
+        return self.load_csv_files(file_paths)
+
+    def load_csv_files(self, file_paths: Sequence[Path | str]) -> int:
+        """Load and validate one CSV or a contiguous exporter part set."""
+        paths = [Path(path).expanduser().resolve() for path in file_paths]
+        if not paths:
+            raise ValueError("선택된 CSV 파일이 없습니다.")
+
+        frames = []
+        encodings = []
+        canonical_columns = None
+        for path in paths:
+            if not path.is_file():
+                raise FileNotFoundError(f"CSV 파일을 찾을 수 없습니다: {path}")
+            self._validate_header(path)
+            frame, encoding = self._read_csv_preserving_text(path)
+            frame.columns = [str(column).lstrip("\ufeff").strip() for column in frame.columns]
+            current_columns = list(frame.columns)
+            if canonical_columns is None:
+                canonical_columns = current_columns
+            elif current_columns != canonical_columns:
+                raise ValueError(
+                    f"{path.name}: 분할 CSV 열 구성이 첫 파일과 다릅니다.\n"
+                    "모든 분할 파일은 같은 순서와 이름의 열을 가져야 합니다."
+                )
+            missing = [column for column in self.REQUIRED_COLUMNS if column not in frame.columns]
+            if missing:
+                raise ValueError(
+                    f"{path.name}: 필수 열이 없습니다: {', '.join(missing)}\n"
+                    "필요한 열: 재생시간, 닉네임, 메시지"
+                )
+            frame["_source_file"] = path.name
+            frame["_source_row"] = range(2, len(frame) + 2)
+            frames.append(frame)
+            encodings.append(encoding)
+
+        combined = pd.concat(frames, ignore_index=True)
+        if combined.empty:
+            raise ValueError("CSV에 분석할 채팅 메시지가 없습니다.")
+
+        parsed_seconds = []
+        invalid_times = []
+        for position, value in enumerate(combined["재생시간"]):
+            try:
+                parsed_seconds.append(self.time_to_seconds(value))
+            except ValueError:
+                parsed_seconds.append(math.nan)
+                if len(invalid_times) < 5:
+                    source = combined.iloc[position]
+                    invalid_times.append(
+                        f"{source['_source_file']} {source['_source_row']}행: {value!r}"
+                    )
+
+        if invalid_times:
+            detail = "\n".join(invalid_times)
+            raise ValueError(
+                "올바르지 않은 재생시간이 있습니다. HH:MM:SS 형식을 사용하세요.\n"
+                f"{detail}"
+            )
+
+        combined["seconds"] = pd.Series(parsed_seconds, dtype="float64")
+        combined["message_raw"] = combined["메시지"].astype("string")
+        combined["clean_message"] = combined["message_raw"].apply(self.clean_message)
+        combined["custom_emote_count"] = combined["message_raw"].apply(
+            lambda value: len(re.findall(r"\{:[^:]+:\}", str(value)))
+        )
+        combined["is_system"] = combined["닉네임"].str.strip().eq("[SYSTEM]")
+
+        self.df = combined
+        self.reset_results()
+        self.session_info = {
+            "source_files": [str(path) for path in paths],
+            "file_count": len(paths),
+            "row_count": len(combined),
+            "duplicate_rows": int(combined[list(self.REQUIRED_COLUMNS)].duplicated().sum()),
+            "system_rows": int(combined["is_system"].sum()),
+            "blank_messages": int(combined["message_raw"].str.strip().eq("").sum()),
+            "blank_clean_messages": int(combined["clean_message"].str.strip().eq("").sum()),
+            "custom_emote_rows": int(combined["custom_emote_count"].gt(0).sum()),
+            "start_seconds": float(combined["seconds"].min()),
+            "end_seconds": float(combined["seconds"].max()),
+            "encodings": encodings,
+        }
         return len(self.df)
+
+    def _discover_csv_parts(self, selected_path: Path) -> List[Path]:
+        """Return all contiguous exporter parts when a split file is selected."""
+        match = self.SPLIT_FILE_PATTERN.match(selected_path.name)
+        if not match:
+            return [selected_path]
+
+        base = match.group("base")
+        candidates = []
+        for candidate in selected_path.parent.glob(f"{base}_d_p*.csv"):
+            candidate_match = self.SPLIT_FILE_PATTERN.match(candidate.name)
+            if candidate_match and candidate_match.group("base") == base:
+                candidates.append((int(candidate_match.group("part")), candidate))
+
+        candidates.sort(key=lambda item: item[0])
+        if not candidates:
+            return [selected_path]
+
+        parts = [part for part, _ in candidates]
+        expected = list(range(1, parts[-1] + 1))
+        if parts != expected:
+            missing = sorted(set(expected) - set(parts))
+            missing_text = ", ".join(f"p{part:03d}" for part in missing)
+            raise ValueError(f"분할 CSV 일부가 없습니다: {missing_text}")
+        return [path for _, path in candidates]
+
+    def _validate_header(self, path: Path) -> None:
+        """Reject duplicate or empty columns before pandas renames them silently."""
+        raw = path.read_bytes()
+        first_line = None
+        for encoding in ("utf-8-sig", "utf-8", "cp949"):
+            try:
+                first_line = raw.splitlines()[0].decode(encoding)
+                break
+            except (UnicodeDecodeError, IndexError):
+                continue
+        if first_line is None:
+            raise ValueError(f"{path.name}: CSV 헤더를 읽을 수 없습니다.")
+
+        columns = next(csv.reader([first_line]))
+        normalized = [column.lstrip("\ufeff").strip() for column in columns]
+        if any(not column for column in normalized):
+            raise ValueError(f"{path.name}: 비어 있는 열 이름이 있습니다.")
+        duplicates = sorted({column for column in normalized if normalized.count(column) > 1})
+        if duplicates:
+            raise ValueError(f"{path.name}: 중복된 열 이름이 있습니다: {', '.join(duplicates)}")
+
+    def _read_csv_preserving_text(self, path: Path) -> tuple[pd.DataFrame, str]:
+        last_error = None
+        for encoding in ("utf-8-sig", "utf-8", "cp949"):
+            try:
+                frame = pd.read_csv(
+                    path,
+                    encoding=encoding,
+                    dtype="string",
+                    keep_default_na=False,
+                )
+                return frame, encoding
+            except UnicodeDecodeError as error:
+                last_error = error
+        raise ValueError(f"{path.name}: 지원하지 않는 CSV 인코딩입니다.") from last_error
     
-    def time_to_seconds(self, time_str: str) -> int:
-        """Convert HH:MM:SS to seconds"""
-        try:
-            parts = time_str.split(':')
-            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-        except:
-            return 0
+    def time_to_seconds(self, time_str: str) -> float:
+        """Convert a validated HH:MM:SS[.sss] timestamp to seconds."""
+        match = self.TIME_PATTERN.fullmatch(str(time_str))
+        if not match:
+            raise ValueError(f"올바르지 않은 재생시간: {time_str!r}")
+        fraction = match.group("fraction") or ""
+        fraction_seconds = int(fraction.ljust(3, "0")) / 1000 if fraction else 0.0
+        return (
+            int(match.group("hours")) * 3600
+            + int(match.group("minutes")) * 60
+            + int(match.group("seconds"))
+            + fraction_seconds
+        )
     
-    def seconds_to_time(self, seconds: int) -> str:
+    def seconds_to_time(self, seconds: int | float) -> str:
         """Convert seconds to HH:MM:SS"""
+        seconds = max(0, int(seconds))
         hours = seconds // 3600
         minutes = (seconds % 3600) // 60
         secs = seconds % 60
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
     
     def clean_message(self, message) -> str:
-        """Remove emoticons and clean message text"""
+        """Normalize chat text while preserving custom-emote names as evidence."""
         if pd.isna(message):
             return ""
-        
-        # Remove emoticon patterns {:emoji:}
-        message = re.sub(r'\{:[^:]+:\}', '', str(message))
-        
-        # Remove donation patterns [후원 1000치즈]
-        message = re.sub(r'\[후원 \d+치즈\]\s*', '', message)
-        
-        # Remove subscription patterns [3개월 구독]
-        message = re.sub(r'\[\d+개월 구독\]\s*\d*', '', message)
-        
-        return message.strip()
+
+        text = unicodedata.normalize("NFC", str(message))
+        text = re.sub(r"[\u200b-\u200d\ufeff]", "", text)
+        text = re.sub(r"\{:([^:]+):\}", r" \1 ", text)
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
     
     def analyze_keyword(self, keyword: str, interval_minutes: float, sensitivity: float = 2.0) -> Dict:
-        """
-        Analyze keyword frequency over time with Z-Score based filtering
-        
-        Args:
-            keyword: Keyword to search for
-            interval_minutes: Time interval in minutes
-            sensitivity: Z-Score threshold (1.0=low, 2.0=normal, 3.0=high)
-            
-        Returns:
-            Dictionary with analysis results
-        """
-        if self.df is None:
-            raise ValueError("No CSV loaded")
-        
-        # Convert time to seconds
-        self.df['seconds'] = self.df['재생시간'].apply(self.time_to_seconds)
-        
-        # Clean messages
-        self.df['clean_message'] = self.df['메시지'].apply(self.clean_message)
-        
-        # Filter messages containing keyword (escape regex special chars)
-        keyword_df = self.df[self.df['clean_message'].str.contains(re.escape(keyword), case=False, na=False, regex=True)]
-        
-        if len(keyword_df) == 0:
-            return {
-                'total_count': 0,
-                'peak_time': None,
-                'timeline': [],
-                'sensitivity': sensitivity
-            }
-        
-        # Group by time intervals
-        interval_seconds = int(interval_minutes * 60)
-        max_seconds = self.df['seconds'].max()
-        time_bins = list(range(0, max_seconds + interval_seconds, interval_seconds))
-        
-        keyword_df['time_bin'] = pd.cut(keyword_df['seconds'], bins=time_bins, labels=time_bins[:-1])
-        
-        # Count keywords per interval
-        keyword_counts = keyword_df.groupby('time_bin').size()
-        
-        # Z-Score based filtering
-        mean = keyword_counts.mean()
-        std = keyword_counts.std()
-        
-        # Avoid division by zero
-        if std == 0:
-            threshold = mean
-        else:
-            threshold = mean + (sensitivity * std)
-        
-        # Filter significant moments
-        significant_indices = keyword_counts[keyword_counts >= threshold].index
-        
-        # Store results (only significant moments)
-        self.keyword_results = pd.DataFrame({
-            'time_seconds': significant_indices.astype(int),
-            'count': keyword_counts[significant_indices].values
-        })
-        self.keyword_results['time_str'] = self.keyword_results['time_seconds'].apply(self.seconds_to_time)
-        
-        # Find peak time
-        if len(self.keyword_results) > 0:
-            peak_idx = self.keyword_results['count'].idxmax()
-            peak_time = self.keyword_results.loc[peak_idx, 'time_str']
-        else:
-            peak_time = None
-        
+        """Find sustained keyword bursts without sharing density-analysis state."""
+        self._require_loaded()
+        interval_seconds, sensitivity = self._validate_analysis_params(
+            interval_minutes, sensitivity
+        )
+        keyword = str(keyword).strip()
+        if not keyword:
+            raise ValueError("검색 키워드를 입력하세요.")
+
+        analysis_rows = self.df.loc[~self.df["is_system"]].copy()
+        folded_keyword = keyword.casefold()
+        folded_messages = analysis_rows["clean_message"].str.casefold()
+        match_mask = folded_messages.str.contains(
+            re.escape(folded_keyword), regex=True, na=False
+        )
+        matched_rows = analysis_rows.loc[match_mask].copy()
+        matched_rows["occurrence_count"] = folded_messages.loc[match_mask].str.count(
+            re.escape(folded_keyword)
+        )
+
+        timeline = self._build_count_timeline(
+            matched_rows,
+            interval_seconds,
+            count_column="occurrence_count",
+        )
+        events, status = self._detect_events(
+            timeline,
+            matched_rows,
+            interval_seconds,
+            sensitivity,
+            minimum_count=2,
+            minimum_excess=1,
+        )
+        self.keyword_timeline = timeline
+        self.keyword_results = events
+        self.keyword_metadata = {
+            "kind": "keyword",
+            "keyword": keyword,
+            "interval_minutes": float(interval_seconds / 60),
+            "sensitivity": sensitivity,
+            "source_files": list(self.session_info.get("source_files", [])),
+        }
+
+        peak_time = self._strongest_event_time(events)
         return {
-            'total_count': len(keyword_df),
-            'peak_time': peak_time,
-            'timeline': self.keyword_results.to_dict('records'),
-            'sensitivity': sensitivity,
-            'threshold': threshold,
-            'mean': mean,
-            'std': std
+            "total_count": int(len(matched_rows)),
+            "occurrence_count": int(matched_rows["occurrence_count"].sum()),
+            "peak_time": peak_time,
+            "timeline": timeline.to_dict("records"),
+            "events": events.to_dict("records"),
+            "spike_count": int(len(events)),
+            "status": status,
+            "sensitivity": sensitivity,
         }
     
     def analyze_chat_density(self, interval_minutes: float, sensitivity: float = 2.0) -> Dict:
-        """
-        Analyze chat density (message frequency) over time to find highlight moments
-        
-        Args:
-            interval_minutes: Time interval in minutes
-            sensitivity: Z-Score threshold (1.0=low, 2.0=normal, 3.0=high)
-            
-        Returns:
-            Dictionary with analysis results
-        """
-        if self.df is None:
-            raise ValueError("No CSV loaded")
-        
-        # Convert time to seconds if not already done
-        if 'seconds' not in self.df.columns:
-            self.df['seconds'] = self.df['재생시간'].apply(self.time_to_seconds)
-        
-        # Group by time intervals
-        interval_seconds = int(interval_minutes * 60)
-        max_seconds = self.df['seconds'].max()
-        time_bins = list(range(0, max_seconds + interval_seconds, interval_seconds))
-        
-        self.df['time_bin'] = pd.cut(self.df['seconds'], bins=time_bins, labels=time_bins[:-1])
-        
-        # Count messages per interval
-        message_counts = self.df.groupby('time_bin').size()
-        
-        # Z-Score based filtering
-        mean = message_counts.mean()
-        std = message_counts.std()
-        
-        # Avoid division by zero
-        if std == 0:
-            threshold = mean
-        else:
-            threshold = mean + (sensitivity * std)
-        
-        # Filter significant moments (chat spikes)
-        significant_indices = message_counts[message_counts >= threshold].index
-        
-        # Store results (only significant moments)
-        self.keyword_results = pd.DataFrame({
-            'time_seconds': significant_indices.astype(int),
-            'count': message_counts[significant_indices].values
-        })
-        self.keyword_results['time_str'] = self.keyword_results['time_seconds'].apply(self.seconds_to_time)
-        
-        # Find peak time
-        if len(self.keyword_results) > 0:
-            peak_idx = self.keyword_results['count'].idxmax()
-            peak_time = self.keyword_results.loc[peak_idx, 'time_str']
-        else:
-            peak_time = None
-        
-        return {
-            'total_count': len(self.df),
-            'peak_time': peak_time,
-            'timeline': self.keyword_results.to_dict('records'),
-            'sensitivity': sensitivity,
-            'threshold': threshold,
-            'mean': mean,
-            'std': std,
-            'spike_count': len(self.keyword_results)
+        """Find chat-volume events using a robust local baseline."""
+        self._require_loaded()
+        interval_seconds, sensitivity = self._validate_analysis_params(
+            interval_minutes, sensitivity
+        )
+        analysis_rows = self.df.loc[~self.df["is_system"]].copy()
+        timeline = self._build_count_timeline(analysis_rows, interval_seconds)
+        events, status = self._detect_events(
+            timeline,
+            analysis_rows,
+            interval_seconds,
+            sensitivity,
+            minimum_count=3,
+            minimum_excess=2,
+        )
+        self.density_timeline = timeline
+        self.density_results = events
+        self.density_metadata = {
+            "kind": "density",
+            "interval_minutes": float(interval_seconds / 60),
+            "sensitivity": sensitivity,
+            "source_files": list(self.session_info.get("source_files", [])),
         }
+
+        return {
+            "total_count": int(len(analysis_rows)),
+            "peak_time": self._strongest_event_time(events),
+            "timeline": timeline.to_dict("records"),
+            "events": events.to_dict("records"),
+            "sensitivity": sensitivity,
+            "spike_count": int(len(events)),
+            "status": status,
+        }
+
+    def _require_loaded(self) -> None:
+        if self.df is None:
+            raise ValueError("먼저 CSV 파일을 불러오세요.")
+
+    def _validate_analysis_params(
+        self, interval_minutes: float, sensitivity: float
+    ) -> tuple[int, float]:
+        try:
+            interval_minutes = float(interval_minutes)
+            sensitivity = float(sensitivity)
+        except (TypeError, ValueError) as error:
+            raise ValueError("분석 간격과 민감도는 숫자로 입력하세요.") from error
+        if not math.isfinite(interval_minutes) or interval_minutes <= 0:
+            raise ValueError("분석 간격은 0보다 큰 유한한 값이어야 합니다.")
+        if not math.isfinite(sensitivity) or not 1.0 <= sensitivity <= 3.0:
+            raise ValueError("민감도는 1.0부터 3.0 사이여야 합니다.")
+        interval_seconds = max(1, int(round(interval_minutes * 60)))
+        return interval_seconds, sensitivity
+
+    def _build_count_timeline(
+        self,
+        rows: pd.DataFrame,
+        interval_seconds: int,
+        count_column: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """Build zero-filled half-open bins: [start, start + interval)."""
+        max_seconds = float(self.df["seconds"].max())
+        final_bin = int(math.floor(max_seconds / interval_seconds)) * interval_seconds
+        starts = list(range(0, final_bin + interval_seconds, interval_seconds))
+        timeline = pd.DataFrame({"time_seconds": starts})
+
+        if rows.empty:
+            counts = pd.Series(dtype="int64")
+        else:
+            bin_start = (
+                (rows["seconds"].astype(float) // interval_seconds) * interval_seconds
+            ).astype(int)
+            if count_column is None:
+                counts = bin_start.value_counts().sort_index()
+            else:
+                counts = rows.groupby(bin_start, observed=False)[count_column].sum()
+
+        timeline["count"] = (
+            timeline["time_seconds"].map(counts).fillna(0).astype(int)
+        )
+        timeline["time_str"] = timeline["time_seconds"].apply(self.seconds_to_time)
+        return timeline
+
+    def _detect_events(
+        self,
+        timeline: pd.DataFrame,
+        source_rows: pd.DataFrame,
+        interval_seconds: int,
+        sensitivity: float,
+        minimum_count: int,
+        minimum_excess: int,
+    ) -> tuple[pd.DataFrame, str]:
+        """Detect and merge local spikes, then locate their peak in raw chat time."""
+        event_columns = [
+            "event_id", "start_seconds", "peak_seconds", "end_seconds",
+            "time_seconds", "time_str", "count", "peak_window_count",
+            "baseline", "threshold", "lift", "score", "confidence",
+            "unique_users", "top_user_share",
+        ]
+        timeline["baseline"] = 0.0
+        timeline["threshold"] = 0.0
+        timeline["score"] = 0.0
+        timeline["is_candidate"] = False
+        timeline["event_id"] = pd.Series([pd.NA] * len(timeline), dtype="Int64")
+
+        if len(timeline) < 3:
+            return pd.DataFrame(columns=event_columns), "insufficient_data"
+
+        counts = timeline["count"].astype(float).tolist()
+        if len(set(counts)) <= 1:
+            return pd.DataFrame(columns=event_columns), "no_events"
+
+        # Higher sensitivity deliberately lowers the required deviation.
+        deviation_multiplier = 4.0 - sensitivity
+        local_radius = min(6, max(2, len(counts) // 4))
+        candidates = []
+        for index, count in enumerate(counts):
+            left = counts[max(0, index - local_radius):index]
+            right = counts[index + 1:min(len(counts), index + local_radius + 1)]
+            neighbors = left + right
+            if not neighbors:
+                continue
+            ordered = sorted(neighbors)
+            baseline = self._median(ordered)
+            deviations = sorted(abs(value - baseline) for value in neighbors)
+            mad = self._median(deviations)
+            scale = max(1.0, 1.4826 * mad, math.sqrt(max(baseline, 0.0) + 1.0))
+            threshold = baseline + deviation_multiplier * scale
+            excess = count - baseline
+            lift = count / max(baseline, 1.0)
+            score = excess / scale
+            is_candidate = (
+                count > baseline
+                and count >= minimum_count
+                and excess >= minimum_excess
+                and count >= math.ceil(threshold)
+                and (baseline == 0 or lift >= 1.35)
+            )
+            timeline.at[index, "baseline"] = round(baseline, 3)
+            timeline.at[index, "threshold"] = round(threshold, 3)
+            timeline.at[index, "score"] = round(score, 3)
+            timeline.at[index, "is_candidate"] = bool(is_candidate)
+            if is_candidate:
+                candidates.append(index)
+
+        if not candidates:
+            return pd.DataFrame(columns=event_columns), "no_events"
+
+        groups: List[List[int]] = []
+        for index in candidates:
+            if groups and index <= groups[-1][-1] + 2:
+                groups[-1].append(index)
+            else:
+                groups.append([index])
+
+        events = []
+        source_end = float(self.df["seconds"].max())
+        for event_number, group in enumerate(groups, start=1):
+            first_index = group[0]
+            last_index = group[-1]
+            start_seconds = int(timeline.iloc[first_index]["time_seconds"])
+            end_seconds = min(
+                source_end,
+                int(timeline.iloc[last_index]["time_seconds"]) + interval_seconds,
+            )
+            event_rows = source_rows.loc[
+                source_rows["seconds"].ge(start_seconds)
+                & source_rows["seconds"].lt(end_seconds + 1e-9)
+            ]
+            peak_seconds, peak_window_count = self._find_actual_peak(event_rows)
+            group_timeline = timeline.iloc[group]
+            count = int(group_timeline["count"].sum())
+            baseline = float(group_timeline["baseline"].mean())
+            threshold = float(group_timeline["threshold"].mean())
+            score = float(group_timeline["score"].max())
+            lift = count / max(baseline * len(group), 1.0)
+            unique_users = int(event_rows["닉네임"].nunique()) if not event_rows.empty else 0
+            if event_rows.empty:
+                top_user_share = 0.0
+            else:
+                top_user_share = float(event_rows["닉네임"].value_counts(normalize=True).iloc[0])
+            diversity_factor = min(1.0, unique_users / 5.0) * (1.0 - top_user_share)
+            confidence = min(
+                1.0,
+                max(0.0, 0.45 * min(score / 5.0, 1.0)
+                    + 0.35 * min(lift / 3.0, 1.0)
+                    + 0.20 * diversity_factor),
+            )
+            timeline.loc[group, "event_id"] = event_number
+            events.append({
+                "event_id": event_number,
+                "start_seconds": start_seconds,
+                "peak_seconds": round(peak_seconds, 3),
+                "end_seconds": round(float(end_seconds), 3),
+                "time_seconds": round(peak_seconds, 3),
+                "time_str": self.seconds_to_time(peak_seconds),
+                "count": count,
+                "peak_window_count": peak_window_count,
+                "baseline": round(baseline, 3),
+                "threshold": round(threshold, 3),
+                "lift": round(lift, 3),
+                "score": round(score, 3),
+                "confidence": round(confidence, 3),
+                "unique_users": unique_users,
+                "top_user_share": round(top_user_share, 3),
+            })
+
+        return pd.DataFrame(events, columns=event_columns), "ok"
+
+    @staticmethod
+    def _median(values: List[float]) -> float:
+        if not values:
+            return 0.0
+        middle = len(values) // 2
+        if len(values) % 2:
+            return float(values[middle])
+        return float((values[middle - 1] + values[middle]) / 2)
+
+    def _find_actual_peak(self, rows: pd.DataFrame, window_seconds: float = 15.0) -> tuple[float, int]:
+        if rows.empty:
+            return 0.0, 0
+        times = sorted(float(value) for value in rows["seconds"])
+        best_left = 0
+        best_right = 0
+        right = 0
+        for left, start in enumerate(times):
+            right = max(right, left)
+            while right < len(times) and times[right] <= start + window_seconds:
+                right += 1
+            if right - left > best_right - best_left:
+                best_left, best_right = left, right
+        peak_times = times[best_left:best_right]
+        return self._median(peak_times), len(peak_times)
+
+    @staticmethod
+    def _strongest_event_time(events: pd.DataFrame) -> Optional[str]:
+        if events.empty:
+            return None
+        strongest = events.sort_values(
+            ["score", "peak_window_count"], ascending=False
+        ).iloc[0]
+        return str(strongest["time_str"])
     
     def get_keyword_timeline(self) -> Optional[pd.DataFrame]:
         """Get keyword analysis timeline"""
-        return self.keyword_results
-    
-    def export_premiere_csv(self, output_path: str, keyword: str) -> bool:
-        """
-        Export Premiere Pro marker CSV
-        
-        Args:
-            output_path: Output file path
-            keyword: Keyword name for markers
-            
-        Returns:
-            True if successful
-        """
-        if self.keyword_results is None:
-            return False
-        
-        # Create Premiere Pro marker format
-        markers = []
-        for _, row in self.keyword_results.iterrows():
-            if row['count'] > 0:
-                markers.append({
-                    'Marker Name': f"{keyword} ({row['count']}회)",
-                    'Description': f"{keyword} 키워드가 {row['count']}번 언급됨",
-                    'In': row['time_str'],
-                    'Out': '',
-                    'Duration': '',
-                    'Marker Type': 'Comment'
-                })
-        
-        markers_df = pd.DataFrame(markers)
-        markers_df.to_csv(output_path, index=False, encoding='utf-8-sig')
+        return self.keyword_timeline
+
+    def get_density_timeline(self) -> Optional[pd.DataFrame]:
+        """Get density analysis timeline without exposing keyword state."""
+        return self.density_timeline
+
+    def build_editor_moments(
+        self,
+        kind: str = "density",
+        pre_roll_seconds: float = 15.0,
+        post_roll_seconds: float = 20.0,
+    ) -> List[Dict]:
+        """Create editor-ready ranges around each event's raw-chat peak."""
+        if kind not in {"density", "keyword"}:
+            raise ValueError("분석 유형은 density 또는 keyword여야 합니다.")
+        try:
+            pre_roll_seconds = float(pre_roll_seconds)
+            post_roll_seconds = float(post_roll_seconds)
+        except (TypeError, ValueError) as error:
+            raise ValueError("프리롤과 포스트롤은 숫자여야 합니다.") from error
+        if (
+            not math.isfinite(pre_roll_seconds)
+            or not math.isfinite(post_roll_seconds)
+            or pre_roll_seconds < 0
+            or post_roll_seconds < 0
+        ):
+            raise ValueError("프리롤과 포스트롤은 0 이상의 유한한 값이어야 합니다.")
+
+        events = self.density_results if kind == "density" else self.keyword_results
+        metadata = self.density_metadata if kind == "density" else self.keyword_metadata
+        if events is None or metadata is None:
+            raise ValueError("먼저 해당 분석을 실행하세요.")
+        if events.empty:
+            return []
+
+        source_end = float(self.session_info.get("end_seconds", events["end_seconds"].max()))
+        keyword = str(metadata.get("keyword", ""))
+        moments = []
+        for number, (_, event) in enumerate(events.iterrows(), start=1):
+            peak_seconds = float(event["peak_seconds"])
+            clip_start = max(0.0, peak_seconds - pre_roll_seconds)
+            clip_end = min(source_end, peak_seconds + post_roll_seconds)
+            label = (
+                f"{keyword} 급증 #{number}" if kind == "keyword"
+                else f"채팅 급증 #{number}"
+            )
+            moments.append({
+                "moment_id": f"{kind}-{number:03d}",
+                "kind": kind,
+                "keyword": keyword,
+                "label": label,
+                "clip_start_seconds": round(clip_start, 3),
+                "peak_seconds": round(peak_seconds, 3),
+                "clip_end_seconds": round(clip_end, 3),
+                "event_start_seconds": round(float(event["start_seconds"]), 3),
+                "event_end_seconds": round(float(event["end_seconds"]), 3),
+                "clip_start_time": self.seconds_to_time(clip_start),
+                "peak_time": self.seconds_to_time(peak_seconds),
+                "clip_end_time": self.seconds_to_time(clip_end),
+                "pre_roll_seconds": round(peak_seconds - clip_start, 3),
+                "post_roll_seconds": round(clip_end - peak_seconds, 3),
+                "count": int(event["count"]),
+                "peak_window_count": int(event["peak_window_count"]),
+                "lift": float(event["lift"]),
+                "score": float(event["score"]),
+                "confidence": float(event["confidence"]),
+                "unique_users": int(event["unique_users"]),
+                "top_user_share": float(event["top_user_share"]),
+            })
+        return moments
+
+    def export_editor_csv(
+        self,
+        output_path: str,
+        kind: str = "density",
+        pre_roll_seconds: float = 15.0,
+        post_roll_seconds: float = 20.0,
+    ) -> bool:
+        """Export a human-readable editor work table, not a native NLE project."""
+        moments = self.build_editor_moments(kind, pre_roll_seconds, post_roll_seconds)
+        columns = {
+            "moment_id": "구간 ID",
+            "kind": "분석 유형",
+            "keyword": "키워드",
+            "label": "구간 이름",
+            "clip_start_time": "추천 시작",
+            "peak_time": "핵심 시점",
+            "clip_end_time": "추천 종료",
+            "pre_roll_seconds": "프리롤(초)",
+            "post_roll_seconds": "포스트롤(초)",
+            "count": "이벤트 채팅 수",
+            "peak_window_count": "피크 15초 채팅 수",
+            "lift": "기준 대비 배수",
+            "confidence": "신뢰도",
+            "unique_users": "참여 인원",
+            "top_user_share": "최다 참여자 비율",
+        }
+        frame = pd.DataFrame(moments)
+        if frame.empty:
+            frame = pd.DataFrame(columns=list(columns))
+        frame[list(columns)].rename(columns=columns).to_csv(
+            output_path, index=False, encoding="utf-8-sig"
+        )
         return True
-    
-    def export_edl(self, output_path: str, keyword: str) -> bool:
-        """
-        Export EDL (Edit Decision List) for DaVinci Resolve / Final Cut Pro
-        
-        Args:
-            output_path: Output file path
-            keyword: Keyword name for markers
-            
-        Returns:
-            True if successful
-        """
-        if self.keyword_results is None:
-            return False
-        
-        # EDL format:
-        # 001  AX       V     C        00:00:10:00 00:00:10:00 00:00:10:00 00:00:10:00
-        # * FROM CLIP NAME: marker_name
-        
-        edl_lines = []
-        edl_lines.append("TITLE: Chzzk Chat Markers")
-        edl_lines.append("FCM: NON-DROP FRAME")
-        edl_lines.append("")
-        
-        for idx, (_, row) in enumerate(self.keyword_results.iterrows(), 1):
-            if row['count'] > 0:
-                # Convert time_str (HH:MM:SS) to timecode (HH:MM:SS:FF)
-                timecode = f"{row['time_str']}:00"
-                
-                # EDL entry
-                edl_lines.append(f"{idx:03d}  AX       V     C        {timecode} {timecode} {timecode} {timecode}")
-                edl_lines.append(f"* FROM CLIP NAME: {keyword} ({row['count']}회)")
-                edl_lines.append(f"* COMMENT: {keyword} 키워드가 {row['count']}번 언급됨")
-                edl_lines.append("")
-        
-        # Write to file
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(edl_lines))
-        
+
+    @staticmethod
+    def _rate_info(fps: float) -> tuple[int, bool, float, str]:
+        try:
+            fps = float(fps)
+        except (TypeError, ValueError) as error:
+            raise ValueError("프레임 레이트는 숫자여야 합니다.") from error
+        supported = {
+            23.976: (24, True, 24000 / 1001, "1001/24000s"),
+            24.0: (24, False, 24.0, "1/24s"),
+            25.0: (25, False, 25.0, "1/25s"),
+            29.97: (30, True, 30000 / 1001, "1001/30000s"),
+            30.0: (30, False, 30.0, "1/30s"),
+            50.0: (50, False, 50.0, "1/50s"),
+            59.94: (60, True, 60000 / 1001, "1001/60000s"),
+            60.0: (60, False, 60.0, "1/60s"),
+        }
+        for candidate, info in supported.items():
+            if abs(fps - candidate) < 0.002:
+                return info
+        raise ValueError("지원 프레임 레이트: 23.976, 24, 25, 29.97, 30, 50, 59.94, 60")
+
+    def export_premiere_xml(
+        self,
+        output_path: str,
+        kind: str = "density",
+        fps: float = 30.0,
+        pre_roll_seconds: float = 15.0,
+        post_roll_seconds: float = 20.0,
+    ) -> bool:
+        """Export Final Cut Pro 7 XML, which Premiere can exchange with markers."""
+        moments = self.build_editor_moments(kind, pre_roll_seconds, post_roll_seconds)
+        timebase, ntsc, actual_fps, _ = self._rate_info(fps)
+        duration_seconds = max(
+            float(self.session_info.get("end_seconds", 0.0)),
+            max((item["clip_end_seconds"] for item in moments), default=0.0),
+        )
+
+        root = ET.Element("xmeml", version="5")
+        sequence = ET.SubElement(root, "sequence")
+        ET.SubElement(sequence, "name").text = "Clip Moment Markers"
+        ET.SubElement(sequence, "duration").text = str(round(duration_seconds * actual_fps))
+        rate = ET.SubElement(sequence, "rate")
+        ET.SubElement(rate, "timebase").text = str(timebase)
+        ET.SubElement(rate, "ntsc").text = "TRUE" if ntsc else "FALSE"
+        timecode = ET.SubElement(sequence, "timecode")
+        tc_rate = ET.SubElement(timecode, "rate")
+        ET.SubElement(tc_rate, "timebase").text = str(timebase)
+        ET.SubElement(tc_rate, "ntsc").text = "TRUE" if ntsc else "FALSE"
+        ET.SubElement(timecode, "string").text = "00:00:00:00"
+        ET.SubElement(timecode, "frame").text = "0"
+        ET.SubElement(timecode, "displayformat").text = "NDF"
+
+        for moment in moments:
+            marker_frame = round(moment["peak_seconds"] * actual_fps)
+            marker = ET.SubElement(sequence, "marker")
+            ET.SubElement(marker, "name").text = moment["label"]
+            ET.SubElement(marker, "comment").text = (
+                f"추천 {moment['clip_start_time']} - {moment['clip_end_time']} / "
+                f"신뢰도 {moment['confidence']:.2f}"
+            )
+            ET.SubElement(marker, "in").text = str(marker_frame)
+            ET.SubElement(marker, "out").text = str(marker_frame + 1)
+
+        media = ET.SubElement(sequence, "media")
+        video = ET.SubElement(media, "video")
+        fmt = ET.SubElement(video, "format")
+        characteristics = ET.SubElement(fmt, "samplecharacteristics")
+        format_rate = ET.SubElement(characteristics, "rate")
+        ET.SubElement(format_rate, "timebase").text = str(timebase)
+        ET.SubElement(format_rate, "ntsc").text = "TRUE" if ntsc else "FALSE"
+        ET.SubElement(characteristics, "width").text = "1920"
+        ET.SubElement(characteristics, "height").text = "1080"
+        ET.SubElement(characteristics, "anamorphic").text = "FALSE"
+        ET.indent(root, space="  ")
+        ET.ElementTree(root).write(output_path, encoding="utf-8", xml_declaration=True)
+        return True
+
+    def export_fcpxml(
+        self,
+        output_path: str,
+        kind: str = "density",
+        fps: float = 30.0,
+        pre_roll_seconds: float = 15.0,
+        post_roll_seconds: float = 20.0,
+    ) -> bool:
+        """Export a marker-only FCPXML project for Final Cut Pro."""
+        moments = self.build_editor_moments(kind, pre_roll_seconds, post_roll_seconds)
+        _, _, actual_fps, frame_duration = self._rate_info(fps)
+        duration_seconds = max(
+            float(self.session_info.get("end_seconds", 0.0)),
+            max((item["clip_end_seconds"] for item in moments), default=0.0),
+            1.0 / actual_fps,
+        )
+        duration_frames = max(1, round(duration_seconds * actual_fps))
+        denominator = 24000 if abs(actual_fps - 24000 / 1001) < 0.01 else (
+            30000 if abs(actual_fps - 30000 / 1001) < 0.01 else (
+                60000 if abs(actual_fps - 60000 / 1001) < 0.01 else round(actual_fps)
+            )
+        )
+        numerator_per_frame = 1001 if denominator in {24000, 30000, 60000} else 1
+        duration_value = f"{duration_frames * numerator_per_frame}/{denominator}s"
+
+        root = ET.Element("fcpxml", version="1.10")
+        resources = ET.SubElement(root, "resources")
+        ET.SubElement(
+            resources,
+            "format",
+            id="r1",
+            name="FFVideoFormatRateUndefined",
+            frameDuration=frame_duration,
+            width="1920",
+            height="1080",
+        )
+        library = ET.SubElement(root, "library")
+        event = ET.SubElement(library, "event", name="Clip Moment Markers")
+        project = ET.SubElement(event, "project", name="Clip Moment Markers")
+        sequence = ET.SubElement(
+            project,
+            "sequence",
+            format="r1",
+            duration=duration_value,
+            tcStart="0s",
+            tcFormat="NDF",
+        )
+        spine = ET.SubElement(sequence, "spine")
+        gap = ET.SubElement(
+            spine,
+            "gap",
+            name="Clip Moment Timeline",
+            offset="0s",
+            start="0s",
+            duration=sequence.attrib["duration"],
+        )
+        for moment in moments:
+            frame = round(moment["peak_seconds"] * actual_fps)
+            marker = ET.SubElement(
+                gap,
+                "marker",
+                start=f"{frame * numerator_per_frame}/{denominator}s",
+                duration=frame_duration,
+                value=moment["label"],
+                note=(
+                    f"추천 {moment['clip_start_time']} - {moment['clip_end_time']} / "
+                    f"신뢰도 {moment['confidence']:.2f}"
+                ),
+            )
+
+        ET.indent(root, space="  ")
+        ET.ElementTree(root).write(output_path, encoding="utf-8", xml_declaration=True)
         return True
     
     def get_all_text(self) -> str:
-        """Get all chat text for wordcloud"""
+        """Get normalized tokens for wordcloud without reaction-variant flooding."""
         if self.df is None:
             return ""
-        
-        # Clean messages if not already done
-        if 'clean_message' not in self.df.columns:
-            self.df['clean_message'] = self.df['메시지'].apply(self.clean_message)
-        
-        # Exclude system messages
-        text_messages = self.df[self.df['닉네임'] != '[SYSTEM]']['clean_message']
-        text_messages = text_messages[text_messages.str.len() > 0]
-        
-        return ' '.join(text_messages)
+
+        tokens = []
+        for message in self.df.loc[~self.df["is_system"], "clean_message"]:
+            text = str(message)
+            text = re.sub(r"https?://\S+", " ", text, flags=re.IGNORECASE)
+            text = re.sub(r"ㅋ{3,}", "ㅋㅋ", text)
+            text = re.sub(r"ㅠ{3,}", "ㅠㅠ", text)
+            text = re.sub(r"ㅜ{3,}", "ㅜㅜ", text)
+            text = re.sub(r"[^0-9A-Za-z가-힣ㄱ-ㅎㅏ-ㅣ_]+", " ", text)
+            for token in text.split():
+                normalized = token.casefold()
+                if len(normalized) < 2 or normalized.isdigit():
+                    continue
+                tokens.append(normalized)
+        return " ".join(tokens)

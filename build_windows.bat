@@ -1,13 +1,11 @@
 @echo off
+setlocal
+cd /d "%~dp0"
 
-echo Building Chzzk Chat Analyzer for Windows...
+python -m pip install -r requirements-dev.txt || exit /b 1
+set QT_QPA_PLATFORM=offscreen
+python -m pytest || exit /b 1
+python -m PyInstaller --clean --noconfirm build.spec || exit /b 1
 
-REM Install dependencies
-echo Installing dependencies...
-pip install -r requirements.txt
-
-REM Build with PyInstaller
-echo Building application...
-pyinstaller build.spec
-
-echo Build complete! Application is in dist\ChzzkChatAnalyzer\ChzzkChatAnalyzer.exe
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\smoke_windows.ps1" || exit /b 1
+echo Built dist\ChzzkClipMomentCatcher\ChzzkClipMomentCatcher.exe

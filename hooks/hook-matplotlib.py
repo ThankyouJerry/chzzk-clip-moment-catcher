@@ -1,5 +1,4 @@
-from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+from PyInstaller.utils.hooks import collect_data_files
 
-# Collect matplotlib submodules
-hiddenimports = collect_submodules('matplotlib')
-datas = collect_data_files('matplotlib')
+hiddenimports = ["matplotlib.backends.backend_qtagg"]
+datas = collect_data_files("matplotlib")

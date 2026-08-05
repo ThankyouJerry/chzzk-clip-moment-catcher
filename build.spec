@@ -1,66 +1,50 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-import sys
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+import sys
 
-# Add src directory to path
-src_path = str(Path('.').absolute() / 'src')
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
-block_cipher = None
 
-# Collect all matplotlib data and submodules
-matplotlib_datas, matplotlib_binaries, matplotlib_hiddenimports = collect_all('matplotlib')
-pillow_datas, pillow_binaries, pillow_hiddenimports = collect_all('PIL')
-wordcloud_datas, wordcloud_binaries, wordcloud_hiddenimports = collect_all('wordcloud')
+ROOT = Path(SPECPATH).resolve()
+SRC = ROOT / "src"
+sys.path.insert(0, str(SRC))
+from version import APP_VERSION, BUNDLE_IDENTIFIER
 
-a = Analysis(
-    ['src/main.py'],
-    pathex=[src_path],
-    binaries=matplotlib_binaries + pillow_binaries + wordcloud_binaries,
-    datas=matplotlib_datas + pillow_datas + wordcloud_datas + [
-        ('src/ui', 'ui'),
-        ('src/core', 'core'),
-    ],
-    hiddenimports=[
-        'PyQt6.QtCore',
-        'PyQt6.QtGui',
-        'PyQt6.QtWidgets',
-        'pandas',
-        'matplotlib',
-        'matplotlib.pyplot',
-        'matplotlib.figure',
-        'matplotlib.backends.backend_qtagg',
-        'matplotlib.backends.backend_qt5agg',
-        'wordcloud',
-        'PIL',
-        'PIL.Image',
-        'ui',
-        'ui.main_window',
-        'ui.styles',
-        'core',
-        'core.analyzer',
-        'core.wordcloud_gen',
-        'core.sentiment_analyzer',
-    ] + matplotlib_hiddenimports + pillow_hiddenimports + wordcloud_hiddenimports,
-    hookspath=['hooks'],
+datas = collect_data_files("matplotlib") + collect_data_files("wordcloud")
+binaries = collect_dynamic_libs("wordcloud") + collect_dynamic_libs("PIL")
+hiddenimports = [
+    "PyQt6.QtCore",
+    "PyQt6.QtGui",
+    "PyQt6.QtWidgets",
+    "matplotlib.backends.backend_qtagg",
+    "ui.main_window",
+    "ui.styles",
+    "core.analyzer",
+    "core.sentiment_analyzer",
+    "core.wordcloud_gen",
+]
+
+analysis = Analysis(
+    [str(SRC / "main.py")],
+    pathex=[str(SRC)],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
+    hookspath=[str(ROOT / "hooks")],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
+    excludes=["tkinter", "pytest"],
     noarchive=False,
 )
+pyz = PYZ(analysis.pure)
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
-
-exe = EXE(
+executable = EXE(
     pyz,
-    a.scripts,
+    analysis.scripts,
     [],
     exclude_binaries=True,
-    name='ChzzkClipMomentCatcher',
+    name="ChzzkClipMomentCatcher",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -73,24 +57,24 @@ exe = EXE(
     entitlements_file=None,
 )
 
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
+collection = COLLECT(
+    executable,
+    analysis.binaries,
+    analysis.datas,
     strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='ChzzkClipMomentCatcher',
+    upx=False,
+    name="ChzzkClipMomentCatcher",
 )
 
 app = BUNDLE(
-    coll,
-    name='ChzzkClipMomentCatcher.app',
-    icon=None,
-    bundle_identifier='com.chzzkclipmomentcatcher.app',
+    collection,
+    name="ChzzkClipMomentCatcher.app",
+    bundle_identifier=BUNDLE_IDENTIFIER,
     info_plist={
-        'NSPrincipalClass': 'NSApplication',
-        'NSHighResolutionCapable': 'True',
+        "CFBundleDisplayName": "Chzzk Clip Moment Catcher",
+        "CFBundleShortVersionString": APP_VERSION,
+        "CFBundleVersion": APP_VERSION,
+        "NSHighResolutionCapable": True,
+        "NSPrincipalClass": "NSApplication",
     },
 )

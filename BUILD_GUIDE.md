@@ -1,110 +1,64 @@
-# Windows + macOS 빌드 가이드
+# 빌드 가이드
 
-## 현재 상황
+## 지원 환경
 
-✅ **macOS 빌드**: 로컬에서 완료
-❌ **Windows 빌드**: Mac에서는 불가능
+| 대상 | GitHub Actions 러너 | 결과 파일 |
+|---|---|---|
+| Windows x86_64 | `windows-latest` | `ChzzkClipMomentCatcher-Windows-x86_64.zip` |
+| macOS Intel | `macos-15-intel` | `ChzzkClipMomentCatcher-macOS-x86_64.zip` |
+| macOS Apple Silicon | `macos-14` | `ChzzkClipMomentCatcher-macOS-arm64.zip` |
 
----
+워크플로우는 Python 3.12와 고정된 의존성을 사용합니다. 모든 운영체제 테스트가 통과해야 빌드가 시작됩니다.
 
-## 해결 방법: GitHub Actions 사용 (자동 빌드)
-
-이미 `.github/workflows/build.yml`이 설정되어 있습니다!
-
-### 작동 방식
-
-1. **GitHub에 푸시**
-2. **Tag 생성** (예: v1.0.0)
-3. **GitHub Actions 자동 실행**:
-   - Windows 환경에서 Windows 빌드
-   - macOS 환경에서 macOS 빌드
-4. **자동으로 Release 생성**:
-   - `ChzzkClipMomentCatcher-Windows.zip`
-   - `ChzzkClipMomentCatcher-macOS.zip`
-
----
-
-## 사용 방법
-
-### 1. GitHub에 푸시
+## 로컬 QA
 
 ```bash
-cd /Users/hvs/.gemini/antigravity/scratch/chzzk-clip-moment-catcher
-
-# Git 초기화 (아직 안했다면)
-git init
-git add .
-git commit -m "Initial commit: Chzzk Clip Moment Catcher v1.0.0"
-
-# GitHub 저장소 연결
-git remote add origin https://github.com/ThankyouJerry/chzzk-clip-moment-catcher.git
-git branch -M main
-git push -u origin main
+python3 -m pip install -r requirements-dev.txt
+QT_QPA_PLATFORM=offscreen python3 -m compileall -q src tests
+QT_QPA_PLATFORM=offscreen python3 -m pytest
 ```
 
-### 2. Tag 생성 및 푸시
+Windows PowerShell에서는 환경 변수를 다음처럼 설정합니다.
+
+```powershell
+$env:QT_QPA_PLATFORM = "offscreen"
+python -m pytest
+```
+
+## 로컬 빌드
+
+macOS:
 
 ```bash
-# Tag 생성
-git tag v1.0.0
-
-# Tag 푸시
-git push origin v1.0.0
+./build_macos.sh
 ```
 
-### 3. GitHub Actions 확인
+Windows:
 
-1. https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/actions 접속
-2. "Build and Release" 워크플로우 실행 확인
-3. 완료되면 자동으로 Release 생성됨
+```bat
+build_windows.bat
+```
 
-### 4. Release 확인
+PyInstaller는 실행 중인 운영체제용 패키지만 만들 수 있습니다. macOS에서 Windows 실행 파일을 직접 만들지 않고 GitHub Actions의 Windows 러너를 사용합니다.
 
-https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/releases
+## Actions 수동 실행
 
-자동으로 생성된 Release에 두 파일이 첨부됨:
-- `ChzzkClipMomentCatcher-Windows.zip`
-- `ChzzkClipMomentCatcher-macOS.zip`
+1. 저장소의 `Actions` 탭을 엽니다.
+2. `QA and Build` 워크플로우를 선택합니다.
+3. `Run workflow`를 실행합니다.
+4. 성공한 실행의 Artifacts에서 운영체제별 ZIP을 받습니다.
 
----
+## 릴리즈
 
-## 수동으로 빌드 트리거
-
-Tag 없이 수동으로 실행하려면:
-
-1. https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/actions
-2. "Build and Release" 선택
-3. "Run workflow" 클릭
-4. Artifacts에서 다운로드
-
----
-
-## 로컬 macOS 빌드 (이미 완료)
+`v`로 시작하는 태그를 푸시하면 테스트와 세 플랫폼 빌드가 모두 성공한 뒤 GitHub Release가 생성됩니다.
 
 ```bash
-cd /Users/hvs/.gemini/antigravity/scratch/chzzk-clip-moment-catcher
-python3 -m PyInstaller build.spec --clean --noconfirm
-cd dist
-zip -r ChzzkClipMomentCatcher-macOS.zip ChzzkClipMomentCatcher.app
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
-파일 위치: `dist/ChzzkClipMomentCatcher-macOS.zip`
+태그는 코드의 `src/version.py` 버전과 일치시켜야 합니다. 태그 생성과 릴리즈 게시는 기능 검증이 끝난 뒤 명시적으로 진행합니다.
 
----
+## macOS 서명 한계
 
-## 정리
-
-**Windows 빌드를 만들려면:**
-1. GitHub에 코드 푸시
-2. Tag 생성 (`v1.0.0`)
-3. GitHub Actions가 자동으로 Windows + macOS 빌드
-4. Release에서 다운로드
-
-**간단하게:**
-```bash
-git push origin main
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-그러면 자동으로 Windows 빌드도 생성됩니다! 🎉
+Actions와 로컬 스크립트는 클라우드 폴더가 추가하는 Finder 메타데이터의 영향을 피하기 위해 임시 경로에서 앱을 정리한 뒤 ad-hoc 서명을 적용합니다. 이어서 `codesign --verify --deep --strict` 검증과 패키지 실행 확인을 수행합니다. Apple Developer ID 서명과 공증은 포함하지 않으므로 배포 환경에서는 Gatekeeper 확인이 나타날 수 있습니다.

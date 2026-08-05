@@ -83,6 +83,20 @@ def get_stylesheet() -> str:
     QLineEdit:focus {{
         border-color: {COLORS['primary']};
     }}
+
+    QComboBox {{
+        background-color: {COLORS['surface']};
+        border: 1px solid {COLORS['border']};
+        border-radius: 6px;
+        padding: 6px 10px;
+        color: {COLORS['text']};
+    }}
+
+    QComboBox QAbstractItemView {{
+        background-color: {COLORS['surface']};
+        color: {COLORS['text']};
+        selection-background-color: {COLORS['primary']};
+    }}
     
     /* Labels */
     QLabel {{
@@ -123,6 +137,58 @@ def get_stylesheet() -> str:
     QScrollArea {{
         border: none;
         background-color: {COLORS['surface']};
+    }}
+
+    QTabWidget::pane {{
+        border: 1px solid {COLORS['border']};
+        background-color: {COLORS['surface']};
+        border-radius: 6px;
+    }}
+
+    QTabBar::tab {{
+        background-color: {COLORS['surface']};
+        color: {COLORS['text_secondary']};
+        border: 1px solid {COLORS['border']};
+        padding: 8px 14px;
+        min-width: 90px;
+    }}
+
+    QTabBar::tab:selected {{
+        background-color: {COLORS['primary']};
+        color: white;
+    }}
+
+    QTableWidget {{
+        background-color: {COLORS['surface']};
+        alternate-background-color: {COLORS['surface_light']};
+        color: {COLORS['text']};
+        gridline-color: {COLORS['border']};
+        border: 1px solid {COLORS['border']};
+        selection-background-color: {COLORS['primary']};
+        selection-color: white;
+    }}
+
+    QHeaderView::section {{
+        background-color: {COLORS['surface_light']};
+        color: {COLORS['text']};
+        border: none;
+        border-right: 1px solid {COLORS['border']};
+        border-bottom: 1px solid {COLORS['border']};
+        padding: 5px;
+        font-weight: 600;
+    }}
+
+    QProgressBar {{
+        background-color: {COLORS['surface']};
+        border: 1px solid {COLORS['border']};
+        border-radius: 5px;
+        color: {COLORS['text']};
+        text-align: center;
+    }}
+
+    QProgressBar::chunk {{
+        background-color: {COLORS['primary']};
+        border-radius: 4px;
     }}
     
     /* Scroll Bar */

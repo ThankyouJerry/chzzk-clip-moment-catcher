@@ -1,4 +1,5 @@
-"""
-Chzzk Chat Analyzer Package
-"""
-__version__ = "1.0.0"
+"""Chzzk Clip Moment Catcher package."""
+
+from .version import APP_VERSION
+
+__version__ = APP_VERSION

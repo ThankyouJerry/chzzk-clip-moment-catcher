@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import QApplication
 
 from ui.main_window import MainWindow
 from ui.styles import get_stylesheet
+from version import APP_NAME, APP_VERSION
 
 
 def main():
@@ -19,9 +20,9 @@ def main():
     app = QApplication(sys.argv)
     
     # Set application metadata
-    app.setApplicationName("Chzzk Clip Moment Catcher")
+    app.setApplicationName(APP_NAME)
     app.setOrganizationName("ChzzkClipMomentCatcher")
-    app.setApplicationVersion("1.0.0")
+    app.setApplicationVersion(APP_VERSION)
     
     # Apply stylesheet
     app.setStyleSheet(get_stylesheet())
