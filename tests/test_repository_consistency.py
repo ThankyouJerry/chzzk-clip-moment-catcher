@@ -31,6 +31,12 @@ def test_ci_covers_qa_and_three_release_archives():
     assert "macos-14" in workflow
     assert "python -m pytest" in workflow
     assert "sudo apt-get install -y libegl1" in workflow
+    assert "actions/checkout@v7" in workflow
+    assert "actions/setup-python@v7" in workflow
+    assert "actions/upload-artifact@v7" in workflow
+    assert "actions/download-artifact@v8" in workflow
+    assert "actions/checkout@v4" not in workflow
+    assert "actions/setup-python@v5" not in workflow
     assert "ChzzkClipMomentCatcher-Windows-x86_64.zip" in workflow
     assert "ChzzkClipMomentCatcher-macOS-x86_64.zip" in workflow
     assert "ChzzkClipMomentCatcher-macOS-arm64.zip" in workflow

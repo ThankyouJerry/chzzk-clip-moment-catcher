@@ -21,8 +21,8 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -44,8 +44,8 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -59,7 +59,7 @@ jobs:
       - name: Create archive
         shell: pwsh
         run: Compress-Archive -Path dist\ChzzkClipMomentCatcher\* -DestinationPath ChzzkClipMomentCatcher-Windows-x86_64.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ChzzkClipMomentCatcher-Windows-x86_64
           path: ChzzkClipMomentCatcher-Windows-x86_64.zip
@@ -79,8 +79,8 @@ jobs:
             arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -92,7 +92,7 @@ jobs:
         run: |
           chmod +x package_macos.sh
           ./package_macos.sh dist/ChzzkClipMomentCatcher.app ChzzkClipMomentCatcher-macOS-${{ matrix.arch }}.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ChzzkClipMomentCatcher-macOS-${{ matrix.arch }}
           path: ChzzkClipMomentCatcher-macOS-${{ matrix.arch }}.zip
@@ -106,7 +106,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: ChzzkClipMomentCatcher-*
           merge-multiple: true
