@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 
@@ -29,6 +30,7 @@ def test_ci_covers_qa_and_three_release_archives():
     assert "macos-15-intel" in workflow
     assert "macos-14" in workflow
     assert "python -m pytest" in workflow
+    assert "sudo apt-get install -y libegl1" in workflow
     assert "ChzzkClipMomentCatcher-Windows-x86_64.zip" in workflow
     assert "ChzzkClipMomentCatcher-macOS-x86_64.zip" in workflow
     assert "ChzzkClipMomentCatcher-macOS-arm64.zip" in workflow
@@ -78,17 +80,15 @@ def test_readme_documents_real_csv_schema_and_export_boundaries():
 
 def test_repository_text_does_not_contain_stale_local_identity():
     forbidden = ("h" + "vs", "jerry" + "mouse", "your_" + "username")
-    for path in ROOT.rglob("*"):
-        if (
-            not path.is_file()
-            or ".git" in path.parts
-            or "__pycache__" in path.parts
-            or any(part in {"build", "dist", "venv", ".venv"} for part in path.parts)
-            or path.suffix.casefold() in {".csv", ".png", ".pyc"}
-        ):
-            continue
-        try:
-            text = path.read_text(encoding="utf-8").casefold()
-        except UnicodeDecodeError:
-            continue
-        assert not any(value in text for value in forbidden), path
+    ignored_dirs = {".git", ".pytest_cache", "__pycache__", "build", "dist", "venv", ".venv"}
+    for directory, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = [name for name in dirnames if name not in ignored_dirs]
+        for filename in filenames:
+            path = Path(directory) / filename
+            if path.suffix.casefold() in {".csv", ".png", ".pyc"}:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8").casefold()
+            except UnicodeDecodeError:
+                continue
+            assert not any(value in text for value in forbidden), path
