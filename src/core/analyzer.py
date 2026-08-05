@@ -4,6 +4,7 @@ from __future__ import annotations
 Chat Analyzer - Core Analysis Logic
 """
 import csv
+from datetime import datetime, timezone
 import math
 from pathlib import Path
 import re
@@ -18,7 +19,15 @@ class ChatAnalyzer:
     """Analyzes Chzzk chat CSV files"""
 
     REQUIRED_COLUMNS = ("재생시간", "닉네임", "메시지")
-    SPLIT_FILE_PATTERN = re.compile(r"^(?P<base>.+)_d_p(?P<part>\d{3})\.csv$", re.IGNORECASE)
+    LEGACY_COLUMN_ALIASES = {
+        "Timestamp": "재생시간",
+        "User ID": "닉네임",
+        "Message": "메시지",
+    }
+    SPLIT_FILE_PATTERNS = (
+        (re.compile(r"^(?P<base>.+)_d_p(?P<part>\d{3})\.csv$", re.IGNORECASE), "p"),
+        (re.compile(r"^(?P<base>.+)_part(?P<part>\d{3})\.csv$", re.IGNORECASE), "part"),
+    )
     TIME_PATTERN = re.compile(
         r"^\s*(?P<hours>\d+):(?P<minutes>[0-5]\d):(?P<seconds>[0-5]\d)"
         r"(?:\.(?P<fraction>\d{1,3}))?\s*$"
@@ -71,6 +80,7 @@ class ChatAnalyzer:
             self._validate_header(path)
             frame, encoding = self._read_csv_preserving_text(path)
             frame.columns = [str(column).lstrip("\ufeff").strip() for column in frame.columns]
+            frame = self._normalize_exporter_columns(frame)
             current_columns = list(frame.columns)
             if canonical_columns is None:
                 canonical_columns = current_columns
@@ -110,7 +120,7 @@ class ChatAnalyzer:
         if invalid_times:
             detail = "\n".join(invalid_times)
             raise ValueError(
-                "올바르지 않은 재생시간이 있습니다. HH:MM:SS 형식을 사용하세요.\n"
+                "올바르지 않은 재생시간이 있습니다. HH:MM:SS 또는 지원되는 exporter 형식을 사용하세요.\n"
                 f"{detail}"
             )
 
@@ -141,14 +151,22 @@ class ChatAnalyzer:
 
     def _discover_csv_parts(self, selected_path: Path) -> List[Path]:
         """Return all contiguous exporter parts when a split file is selected."""
-        match = self.SPLIT_FILE_PATTERN.match(selected_path.name)
-        if not match:
+        matched_pattern = None
+        match = None
+        part_label = "p"
+        for pattern, label in self.SPLIT_FILE_PATTERNS:
+            match = pattern.match(selected_path.name)
+            if match:
+                matched_pattern = pattern
+                part_label = label
+                break
+        if match is None or matched_pattern is None:
             return [selected_path]
 
         base = match.group("base")
         candidates = []
-        for candidate in selected_path.parent.glob(f"{base}_d_p*.csv"):
-            candidate_match = self.SPLIT_FILE_PATTERN.match(candidate.name)
+        for candidate in selected_path.parent.glob("*.csv"):
+            candidate_match = matched_pattern.match(candidate.name)
             if candidate_match and candidate_match.group("base") == base:
                 candidates.append((int(candidate_match.group("part")), candidate))
 
@@ -160,9 +178,18 @@ class ChatAnalyzer:
         expected = list(range(1, parts[-1] + 1))
         if parts != expected:
             missing = sorted(set(expected) - set(parts))
-            missing_text = ", ".join(f"p{part:03d}" for part in missing)
+            missing_text = ", ".join(f"{part_label}{part:03d}" for part in missing)
             raise ValueError(f"분할 CSV 일부가 없습니다: {missing_text}")
         return [path for _, path in candidates]
+
+    def _normalize_exporter_columns(self, frame: pd.DataFrame) -> pd.DataFrame:
+        """Normalize current and legacy chzzk-chat-exporter column names."""
+        rename_map = {
+            source: target
+            for source, target in self.LEGACY_COLUMN_ALIASES.items()
+            if source in frame.columns and target not in frame.columns
+        }
+        return frame.rename(columns=rename_map)
 
     def _validate_header(self, path: Path) -> None:
         """Reject duplicate or empty columns before pandas renames them silently."""
@@ -202,7 +229,21 @@ class ChatAnalyzer:
     
     def time_to_seconds(self, time_str: str) -> float:
         """Convert a validated HH:MM:SS[.sss] timestamp to seconds."""
-        match = self.TIME_PATTERN.fullmatch(str(time_str))
+        value = str(time_str).strip()
+        match = self.TIME_PATTERN.fullmatch(value)
+        if not match and value.startswith("1970-"):
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                seconds = (
+                    parsed.astimezone(timezone.utc)
+                    - datetime(1970, 1, 1, tzinfo=timezone.utc)
+                ).total_seconds()
+                if seconds >= 0:
+                    return seconds
+            except ValueError:
+                pass
         if not match:
             raise ValueError(f"올바르지 않은 재생시간: {time_str!r}")
         fraction = match.group("fraction") or ""
@@ -454,11 +495,22 @@ class ChatAnalyzer:
                 source_end,
                 int(timeline.iloc[last_index]["time_seconds"]) + interval_seconds,
             )
+            end_mask = (
+                source_rows["seconds"].le(end_seconds)
+                if end_seconds >= source_end
+                else source_rows["seconds"].lt(end_seconds)
+            )
             event_rows = source_rows.loc[
                 source_rows["seconds"].ge(start_seconds)
-                & source_rows["seconds"].lt(end_seconds + 1e-9)
+                & end_mask
             ]
-            peak_seconds, peak_window_count = self._find_actual_peak(event_rows)
+            peak_count_column = (
+                "occurrence_count" if "occurrence_count" in event_rows.columns else None
+            )
+            peak_seconds, peak_window_count = self._find_actual_peak(
+                event_rows,
+                count_column=peak_count_column,
+            )
             group_timeline = timeline.iloc[group]
             count = int(group_timeline["count"].sum())
             baseline = float(group_timeline["baseline"].mean())
@@ -507,21 +559,62 @@ class ChatAnalyzer:
             return float(values[middle])
         return float((values[middle - 1] + values[middle]) / 2)
 
-    def _find_actual_peak(self, rows: pd.DataFrame, window_seconds: float = 15.0) -> tuple[float, int]:
+    def _find_actual_peak(
+        self,
+        rows: pd.DataFrame,
+        window_seconds: float = 15.0,
+        count_column: Optional[str] = None,
+    ) -> tuple[float, int]:
         if rows.empty:
             return 0.0, 0
-        times = sorted(float(value) for value in rows["seconds"])
+        ordered = rows.sort_values("seconds")
+        times = [float(value) for value in ordered["seconds"]]
+        if count_column is None:
+            weights = [1] * len(ordered)
+        else:
+            weights = [max(0, int(value)) for value in ordered[count_column]]
         best_left = 0
         best_right = 0
+        best_count = -1
         right = 0
+        window_count = 0
         for left, start in enumerate(times):
             right = max(right, left)
-            while right < len(times) and times[right] <= start + window_seconds:
+            while right < len(times) and times[right] < start + window_seconds:
+                window_count += weights[right]
                 right += 1
-            if right - left > best_right - best_left:
+            if window_count > best_count:
                 best_left, best_right = left, right
+                best_count = window_count
+            window_count -= weights[left]
         peak_times = times[best_left:best_right]
-        return self._median(peak_times), len(peak_times)
+        peak_weights = weights[best_left:best_right]
+        return self._weighted_median(peak_times, peak_weights), max(0, best_count)
+
+    @staticmethod
+    def _weighted_median(values: List[float], weights: List[int]) -> float:
+        total = sum(weights)
+        if not values or total <= 0:
+            return 0.0
+        midpoint = total / 2
+        cumulative = 0
+        for index, (value, weight) in enumerate(zip(values, weights)):
+            cumulative += weight
+            if cumulative > midpoint:
+                return float(value)
+            if cumulative == midpoint:
+                next_value = next(
+                    (
+                        candidate
+                        for candidate, candidate_weight in zip(
+                            values[index + 1:], weights[index + 1:]
+                        )
+                        if candidate_weight > 0
+                    ),
+                    value,
+                )
+                return float((value + next_value) / 2)
+        return float(values[-1])
 
     @staticmethod
     def _strongest_event_time(events: pd.DataFrame) -> Optional[str]:
@@ -614,6 +707,8 @@ class ChatAnalyzer:
     ) -> bool:
         """Export a human-readable editor work table, not a native NLE project."""
         moments = self.build_editor_moments(kind, pre_roll_seconds, post_roll_seconds)
+        count_label = "키워드 출현 횟수" if kind == "keyword" else "이벤트 채팅 수"
+        peak_count_label = "피크 15초 키워드 출현" if kind == "keyword" else "피크 15초 채팅 수"
         columns = {
             "moment_id": "구간 ID",
             "kind": "분석 유형",
@@ -624,12 +719,12 @@ class ChatAnalyzer:
             "clip_end_time": "추천 종료",
             "pre_roll_seconds": "프리롤(초)",
             "post_roll_seconds": "포스트롤(초)",
-            "count": "이벤트 채팅 수",
-            "peak_window_count": "피크 15초 채팅 수",
+            "count": count_label,
+            "peak_window_count": peak_count_label,
             "lift": "기준 대비 배수",
             "confidence": "신뢰도",
-            "unique_users": "참여 인원",
-            "top_user_share": "최다 참여자 비율",
+            "unique_users": "닉네임 기준 참여자 수",
+            "top_user_share": "최다 닉네임 비율",
         }
         frame = pd.DataFrame(moments)
         if frame.empty:

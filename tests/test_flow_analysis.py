@@ -90,7 +90,8 @@ def test_adjacent_spike_bins_merge_and_marker_uses_raw_peak_time(tmp_path):
                 seconds = 270 + (index % 20)
             else:
                 seconds = bin_index * 60 + index
-            rows.append(row(seconds, f"u{index % 10}"))
+            nickname = "boundary-user" if bin_index == 5 and index == 0 else f"u{index % 10}"
+            rows.append(row(seconds, nickname))
     analyzer = load_rows(tmp_path, rows)
 
     result = analyzer.analyze_chat_density(1, sensitivity=2)
@@ -103,6 +104,26 @@ def test_adjacent_spike_bins_merge_and_marker_uses_raw_peak_time(tmp_path):
     assert 220 <= event["peak_seconds"] <= 221
     assert event["time_seconds"] == event["peak_seconds"]
     assert event["unique_users"] == 10
+
+
+def test_actual_peak_uses_half_open_window_and_keyword_occurrence_weights():
+    analyzer = ChatAnalyzer()
+    keyword_rows = pd.DataFrame({
+        "seconds": [0.0, 1.0, 16.0],
+        "occurrence_count": [5, 1, 20],
+    })
+
+    peak_seconds, peak_count = analyzer._find_actual_peak(
+        keyword_rows,
+        count_column="occurrence_count",
+    )
+
+    assert peak_seconds == 16
+    assert peak_count == 20
+
+    boundary_rows = pd.DataFrame({"seconds": [0.0, 15.0]})
+    _, boundary_count = analyzer._find_actual_peak(boundary_rows)
+    assert boundary_count == 1
 
 
 def test_system_messages_are_not_density_evidence(tmp_path):

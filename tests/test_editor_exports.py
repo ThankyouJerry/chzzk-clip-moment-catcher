@@ -65,6 +65,21 @@ def test_editor_csv_is_a_labeled_work_table(tmp_path):
     assert frame.loc[0, "신뢰도"] == pytest.approx(0.9)
 
 
+def test_keyword_editor_csv_labels_occurrences_instead_of_messages(tmp_path):
+    analyzer = ChatAnalyzer()
+    analyzer.keyword_results = pd.DataFrame([event(30)])
+    analyzer.keyword_metadata = {"kind": "keyword", "keyword": "wow"}
+    analyzer.session_info = {"end_seconds": 100.0, "source_files": ["chat.csv"]}
+    path = tmp_path / "keyword-work-table.csv"
+
+    analyzer.export_editor_csv(path, "keyword")
+
+    frame = pd.read_csv(path, encoding="utf-8-sig")
+    assert frame.loc[0, "키워드 출현 횟수"] == 40
+    assert frame.loc[0, "피크 15초 키워드 출현"] == 20
+    assert frame.loc[0, "닉네임 기준 참여자 수"] == 12
+
+
 def test_premiere_xml_uses_actual_peak_frame_and_escapes_text(tmp_path):
     analyzer = ChatAnalyzer()
     analyzer.keyword_results = pd.DataFrame([event(5)])

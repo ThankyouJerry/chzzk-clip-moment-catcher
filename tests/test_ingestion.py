@@ -76,6 +76,32 @@ def test_split_csv_parts_are_discovered_and_merged(tmp_path):
     assert analyzer.df["메시지"].tolist() == ["first", "second"]
 
 
+def test_legacy_exporter_schema_and_iso_elapsed_time_are_supported(tmp_path):
+    source = tmp_path / "legacy.csv"
+    write_csv(
+        source,
+        [{"Timestamp": "1970-01-01T01:02:03.500Z", "User ID": "user", "Message": "chat"}],
+    )
+
+    analyzer = ChatAnalyzer()
+    assert analyzer.load_csv(str(source)) == 1
+    assert analyzer.df.iloc[0]["seconds"] == pytest.approx(3723.5)
+    assert analyzer.df.iloc[0]["닉네임"] == "user"
+    assert analyzer.df.iloc[0]["메시지"] == "chat"
+
+
+def test_legacy_exporter_split_parts_are_discovered_and_merged(tmp_path):
+    first = tmp_path / "vod_part001.csv"
+    second = tmp_path / "vod_part002.csv"
+    columns = ["Timestamp", "User ID", "Message"]
+    write_csv(first, [["1970-01-01T00:00:01.000Z", "user", "first"]], columns=columns)
+    write_csv(second, [["1970-01-01T00:00:02.000Z", "user", "second"]], columns=columns)
+
+    analyzer = ChatAnalyzer()
+    assert analyzer.load_csv(str(second)) == 2
+    assert analyzer.df["메시지"].tolist() == ["first", "second"]
+
+
 def test_split_csv_missing_middle_part_is_rejected(tmp_path):
     first = tmp_path / "vod_d_p001.csv"
     third = tmp_path / "vod_d_p003.csv"

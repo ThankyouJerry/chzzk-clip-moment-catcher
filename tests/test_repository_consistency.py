@@ -10,11 +10,11 @@ def test_application_version_has_one_source_of_truth():
     main_source = (ROOT / "src" / "main.py").read_text(encoding="utf-8")
     spec_source = (ROOT / "build.spec").read_text(encoding="utf-8")
 
-    assert 'APP_VERSION = "1.2.0"' in version_source
+    assert 'APP_VERSION = "1.2.1"' in version_source
     assert "from version import APP_NAME, APP_VERSION" in main_source
     assert "from version import APP_VERSION, BUNDLE_IDENTIFIER" in spec_source
     assert 'setApplicationVersion("' not in main_source
-    assert "## 1.2.0" in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert "## 1.2.1" in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
 
 def test_only_one_entrypoint_and_one_pyinstaller_spec_exist():

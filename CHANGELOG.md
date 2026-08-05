@@ -1,5 +1,21 @@
 # 변경 이력
 
+## 1.2.1 - 2026-08-05
+
+### CSV 호환성과 표시 정확성
+
+- `chzzk-chat-exporter`의 이전 영문 열 형식과 `_part001.csv` 분할 파일을 자동 인식합니다.
+- 이전 exporter의 ISO 재생시간을 VOD 경과시간으로 변환합니다.
+- 키워드 분석의 사건·피크 수치를 채팅 수가 아닌 키워드 출현 횟수로 명확히 표시합니다.
+- 참여자 관련 수치가 닉네임 기준 추정값임을 UI와 편집 작업표에 표시합니다.
+- 15초 피크를 반개방 시간 구간으로 계산하고 사건 종료 경계의 다음 구간 채팅이 중복 포함되지 않게 수정했습니다.
+
+### 문서
+
+- README를 일반 사용자 중심의 다운로드, CSV 준비, 분석 선택, 편집 연동 순서로 정리했습니다.
+- 영상·음성 비분석, 마커 전용 XML, CSV 마지막 채팅 시각 제한, 신뢰도와 개인정보·저작권 한계를 명시했습니다.
+- 개발 환경과 기여 절차는 `CONTRIBUTING.md`로 분리했습니다.
+
 ## 1.2.0
 
 ### 분석 정확도
@@ -19,7 +35,7 @@
 
 ### 편집 연동
 
-- 실제 피크를 기준으로 프리롤과 포스트롤을 적용하며 영상 시작과 끝을 벗어나지 않게 제한합니다.
+- 실제 피크를 기준으로 프리롤과 포스트롤을 적용하며 0초와 CSV의 마지막 채팅 시각을 벗어나지 않게 제한합니다.
 - 편집 작업표 CSV, Premiere 교환 XML, Final Cut FCPXML 내보내기를 제공합니다.
 - 23.976, 29.97, 59.94를 포함한 주요 편집 프레임레이트를 지원합니다.
 
@@ -30,3 +46,11 @@
 - 단일 버전 소스, 단일 진입점, 단일 PyInstaller 설정으로 정리했습니다.
 - Ubuntu, Windows, macOS 테스트와 Windows, macOS Intel, Apple Silicon 빌드를 Actions에 추가했습니다.
 - macOS 패키지는 메타데이터 정리, ad-hoc 서명 검증, 실행 스모크 테스트를 거쳐 생성됩니다.
+
+## 이전 버전
+
+- [1.1.0](https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/compare/v1.0.3...v1.1.0)
+- [1.0.3](https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/compare/v1.0.2...v1.0.3)
+- [1.0.2](https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/compare/v1.0.1...v1.0.2)
+- [1.0.1](https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/compare/v1.0.0...v1.0.1)
+- [1.0.0](https://github.com/ThankyouJerry/chzzk-clip-moment-catcher/releases/tag/v1.0.0)

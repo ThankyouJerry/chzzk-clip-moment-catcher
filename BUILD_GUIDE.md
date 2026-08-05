@@ -12,18 +12,7 @@
 
 ## 로컬 QA
 
-```bash
-python3 -m pip install -r requirements-dev.txt
-QT_QPA_PLATFORM=offscreen python3 -m compileall -q src tests
-QT_QPA_PLATFORM=offscreen python3 -m pytest
-```
-
-Windows PowerShell에서는 환경 변수를 다음처럼 설정합니다.
-
-```powershell
-$env:QT_QPA_PLATFORM = "offscreen"
-python -m pytest
-```
+개발 의존성 설치와 운영체제별 테스트 명령은 [CONTRIBUTING.md의 테스트 절차](CONTRIBUTING.md#테스트)를 기준으로 사용합니다.
 
 ## 로컬 빌드
 

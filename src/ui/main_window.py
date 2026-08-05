@@ -440,24 +440,32 @@ class MainWindow(QMainWindow):
                 f"간격 {interval:g}분 / 민감도 {sensitivity:.1f}\n{status_text}"
             )
             title = "채팅 밀도"
-        figure = self._make_flow_figure(timeline, events, title)
+        count_label = "키워드 출현" if kind == "keyword" else "채팅 수"
+        peak_label = "피크 15초 출현" if kind == "keyword" else "피크 15초 채팅"
+        figure = self._make_flow_figure(timeline, events, title, count_label)
         columns = [
             ("event_id", "번호"), ("start_seconds", "사건 시작"),
             ("peak_seconds", "실제 피크"), ("end_seconds", "사건 종료"),
-            ("count", "채팅 수"), ("peak_window_count", "피크 15초"),
+            ("count", count_label), ("peak_window_count", peak_label),
             ("lift", "기준 대비"), ("confidence", "신뢰도"),
-            ("unique_users", "참여 인원"), ("top_user_share", "최다 참여 비율"),
+            ("unique_users", "닉네임 수"), ("top_user_share", "최다 닉네임 비율"),
         ]
         self._add_result_tab(title, summary, figure, events, columns)
 
-    def _make_flow_figure(self, timeline: pd.DataFrame, events: List[Dict], title: str) -> Figure:
+    def _make_flow_figure(
+        self,
+        timeline: pd.DataFrame,
+        events: List[Dict],
+        title: str,
+        count_label: str,
+    ) -> Figure:
         figure = Figure(figsize=(12, 5.2), facecolor="#2a2a3e")
         axis = figure.add_subplot(111)
         self._style_axis(axis)
         x = timeline["time_seconds"].astype(float) / 60
         width = max(0.1, (x.iloc[1] - x.iloc[0]) * 0.82) if len(x) > 1 else 0.8
         colors = ["#f59e0b" if bool(value) else "#6366f1" for value in timeline["is_candidate"]]
-        axis.bar(x, timeline["count"], width=width, color=colors, alpha=0.88, label="채팅 수")
+        axis.bar(x, timeline["count"], width=width, color=colors, alpha=0.88, label=count_label)
         if timeline["threshold"].gt(0).any():
             axis.plot(x, timeline["threshold"], color="#a0a0b0", linewidth=1.2, label="지역 임계선")
         for event in events:
@@ -473,7 +481,7 @@ class MainWindow(QMainWindow):
             )
         axis.set_title(title, color="#e0e0e0", fontsize=13, fontweight="bold")
         axis.set_xlabel("재생 시간(분)", color="#e0e0e0")
-        axis.set_ylabel("메시지 수", color="#e0e0e0")
+        axis.set_ylabel(count_label, color="#e0e0e0")
         axis.legend(loc="upper right", fontsize=8)
         figure.tight_layout(pad=2)
         return figure
