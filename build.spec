@@ -22,6 +22,7 @@ hiddenimports = [
     "ui.styles",
     "core.analyzer",
     "core.sentiment_analyzer",
+    "core.timeline",
     "core.wordcloud_gen",
 ]
 

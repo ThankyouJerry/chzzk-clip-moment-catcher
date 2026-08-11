@@ -43,6 +43,18 @@ def test_load_preserves_numeric_text_and_normalizes_unicode(tmp_path):
     assert row["seconds"] == 0
 
 
+def test_header_validation_streams_without_reading_the_entire_file(tmp_path, monkeypatch):
+    path = tmp_path / "chat.csv"
+    write_csv(path, [valid_row()])
+
+    def fail_if_called(_path):
+        raise AssertionError("Path.read_bytes must not be used for CSV header validation")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_if_called)
+
+    assert ChatAnalyzer().load_csv(path) == 1
+
+
 def test_load_rejects_missing_schema_and_empty_data(tmp_path):
     missing = tmp_path / "missing.csv"
     write_csv(missing, [{"재생시간": "00:00:01", "메시지": "hello"}])
@@ -159,3 +171,11 @@ def test_wordcloud_collapses_reaction_variants_and_keeps_custom_emote_names(tmp_
     analyzer.load_csv(path)
 
     assert analyzer.get_all_text().split() == ["ㅋㅋ", "ㅋㅋ", "ㅠㅠ", "customhi"]
+
+
+def test_seconds_to_time_preserves_subsecond_precision():
+    analyzer = ChatAnalyzer()
+
+    assert analyzer.seconds_to_time(30.999) == "00:00:30.999"
+    assert analyzer.seconds_to_time(59.9996) == "00:01:00"
+    assert analyzer.seconds_to_time(90) == "00:01:30"

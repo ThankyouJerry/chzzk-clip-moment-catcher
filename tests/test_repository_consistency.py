@@ -43,6 +43,7 @@ def test_ci_covers_qa_and_three_release_archives():
     assert "contents: read" in workflow
     assert "./package_macos.sh" in workflow
     assert "./smoke_windows.ps1" in workflow
+    assert '"core.timeline"' in (ROOT / "build.spec").read_text(encoding="utf-8")
 
 
 def test_macos_packaging_stages_before_signing_and_smoke_checks():

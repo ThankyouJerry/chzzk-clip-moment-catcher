@@ -63,6 +63,22 @@ def test_editor_csv_is_a_labeled_work_table(tmp_path):
     assert frame.loc[0, "핵심 시점"] == "00:00:30"
     assert frame.loc[0, "추천 종료"] == "00:00:50"
     assert frame.loc[0, "신뢰도"] == pytest.approx(0.9)
+    assert frame.loc[0, "추천 시작(초)"] == 15
+    assert frame.loc[0, "핵심 시점(초)"] == 30
+    assert frame.loc[0, "추천 종료(초)"] == 50
+
+
+def test_editor_csv_preserves_milliseconds_in_time_and_numeric_columns(tmp_path):
+    analyzer = analyzer_with_density_events(event(30.999))
+    path = tmp_path / "precise-work-table.csv"
+
+    analyzer.export_editor_csv(path, "density")
+
+    frame = pd.read_csv(path, encoding="utf-8-sig")
+    assert frame.loc[0, "추천 시작"] == "00:00:15.999"
+    assert frame.loc[0, "핵심 시점"] == "00:00:30.999"
+    assert frame.loc[0, "추천 종료"] == "00:00:50.999"
+    assert frame.loc[0, "핵심 시점(초)"] == pytest.approx(30.999)
 
 
 def test_keyword_editor_csv_labels_occurrences_instead_of_messages(tmp_path):

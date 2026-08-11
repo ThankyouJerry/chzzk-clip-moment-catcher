@@ -14,6 +14,8 @@ import xml.etree.ElementTree as ET
 
 import pandas as pd
 
+from core.timeline import timeline_bounds
+
 
 class ChatAnalyzer:
     """Analyzes Chzzk chat CSV files"""
@@ -193,18 +195,25 @@ class ChatAnalyzer:
 
     def _validate_header(self, path: Path) -> None:
         """Reject duplicate or empty columns before pandas renames them silently."""
-        raw = path.read_bytes()
+        with path.open("rb") as stream:
+            raw = stream.readline(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError(f"{path.name}: CSV 헤더가 비정상적으로 깁니다.")
+
         first_line = None
         for encoding in ("utf-8-sig", "utf-8", "cp949"):
             try:
-                first_line = raw.splitlines()[0].decode(encoding)
+                first_line = raw.rstrip(b"\r\n").decode(encoding)
                 break
-            except (UnicodeDecodeError, IndexError):
+            except UnicodeDecodeError:
                 continue
-        if first_line is None:
+        if not first_line:
             raise ValueError(f"{path.name}: CSV 헤더를 읽을 수 없습니다.")
 
-        columns = next(csv.reader([first_line]))
+        try:
+            columns = next(csv.reader([first_line]))
+        except (csv.Error, StopIteration) as error:
+            raise ValueError(f"{path.name}: CSV 헤더 형식이 올바르지 않습니다.") from error
         normalized = [column.lstrip("\ufeff").strip() for column in columns]
         if any(not column for column in normalized):
             raise ValueError(f"{path.name}: 비어 있는 열 이름이 있습니다.")
@@ -256,12 +265,13 @@ class ChatAnalyzer:
         )
     
     def seconds_to_time(self, seconds: int | float) -> str:
-        """Convert seconds to HH:MM:SS"""
-        seconds = max(0, int(seconds))
-        hours = seconds // 3600
-        minutes = (seconds % 3600) // 60
-        secs = seconds % 60
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        """Convert seconds to HH:MM:SS, preserving milliseconds when present."""
+        total_milliseconds = max(0, int(round(float(seconds) * 1000)))
+        hours, remainder = divmod(total_milliseconds, 3_600_000)
+        minutes, remainder = divmod(remainder, 60_000)
+        secs, milliseconds = divmod(remainder, 1000)
+        result = f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        return f"{result}.{milliseconds:03d}" if milliseconds else result
     
     def clean_message(self, message) -> str:
         """Normalize chat text while preserving custom-emote names as evidence."""
@@ -284,7 +294,7 @@ class ChatAnalyzer:
         if not keyword:
             raise ValueError("검색 키워드를 입력하세요.")
 
-        analysis_rows = self.df.loc[~self.df["is_system"]].copy()
+        analysis_rows = self._get_analysis_rows()
         folded_keyword = keyword.casefold()
         folded_messages = analysis_rows["clean_message"].str.casefold()
         match_mask = folded_messages.str.contains(
@@ -336,7 +346,7 @@ class ChatAnalyzer:
         interval_seconds, sensitivity = self._validate_analysis_params(
             interval_minutes, sensitivity
         )
-        analysis_rows = self.df.loc[~self.df["is_system"]].copy()
+        analysis_rows = self._get_analysis_rows()
         timeline = self._build_count_timeline(analysis_rows, interval_seconds)
         events, status = self._detect_events(
             timeline,
@@ -345,6 +355,7 @@ class ChatAnalyzer:
             sensitivity,
             minimum_count=3,
             minimum_excess=2,
+            empty_status="no_evidence",
         )
         self.density_timeline = timeline
         self.density_results = events
@@ -369,6 +380,16 @@ class ChatAnalyzer:
         if self.df is None:
             raise ValueError("먼저 CSV 파일을 불러오세요.")
 
+    def _get_analysis_rows(self) -> pd.DataFrame:
+        """Return non-system rows that contain usable normalized chat text."""
+        self._require_loaded()
+        return self.df.loc[self._analysis_mask()].copy()
+
+    def _analysis_mask(self) -> pd.Series:
+        """Identify rows that can contribute actual chat evidence."""
+        self._require_loaded()
+        return ~self.df["is_system"] & self.df["clean_message"].str.strip().ne("")
+
     def _validate_analysis_params(
         self, interval_minutes: float, sensitivity: float
     ) -> tuple[int, float]:
@@ -392,8 +413,8 @@ class ChatAnalyzer:
     ) -> pd.DataFrame:
         """Build zero-filled half-open bins: [start, start + interval)."""
         max_seconds = float(self.df["seconds"].max())
-        final_bin = int(math.floor(max_seconds / interval_seconds)) * interval_seconds
-        starts = list(range(0, final_bin + interval_seconds, interval_seconds))
+        final_bin, _ = timeline_bounds(max_seconds, interval_seconds)
+        starts = pd.RangeIndex(0, final_bin + interval_seconds, interval_seconds)
         timeline = pd.DataFrame({"time_seconds": starts})
 
         if rows.empty:
@@ -421,6 +442,7 @@ class ChatAnalyzer:
         sensitivity: float,
         minimum_count: int,
         minimum_excess: int,
+        empty_status: str = "no_events",
     ) -> tuple[pd.DataFrame, str]:
         """Detect and merge local spikes, then locate their peak in raw chat time."""
         event_columns = [
@@ -435,6 +457,8 @@ class ChatAnalyzer:
         timeline["is_candidate"] = False
         timeline["event_id"] = pd.Series([pd.NA] * len(timeline), dtype="Int64")
 
+        if source_rows.empty:
+            return pd.DataFrame(columns=event_columns), empty_status
         if len(timeline) < 3:
             return pd.DataFrame(columns=event_columns), "insufficient_data"
 
@@ -717,8 +741,11 @@ class ChatAnalyzer:
             "keyword": "키워드",
             "label": "구간 이름",
             "clip_start_time": "추천 시작",
+            "clip_start_seconds": "추천 시작(초)",
             "peak_time": "핵심 시점",
+            "peak_seconds": "핵심 시점(초)",
             "clip_end_time": "추천 종료",
+            "clip_end_seconds": "추천 종료(초)",
             "pre_roll_seconds": "프리롤(초)",
             "post_roll_seconds": "포스트롤(초)",
             "count": count_label,
@@ -893,7 +920,7 @@ class ChatAnalyzer:
             return ""
 
         tokens = []
-        for message in self.df.loc[~self.df["is_system"], "clean_message"]:
+        for message in self.df.loc[self._analysis_mask(), "clean_message"]:
             text = str(message)
             text = re.sub(r"https?://\S+", " ", text, flags=re.IGNORECASE)
             text = re.sub(r"ㅋ{3,}", "ㅋㅋ", text)

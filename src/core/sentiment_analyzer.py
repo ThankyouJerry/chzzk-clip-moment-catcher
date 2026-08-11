@@ -9,6 +9,8 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
+from core.timeline import timeline_bounds
+
 
 class SentimentAnalyzer:
     """Separates emotional direction (valence) from reaction strength (arousal)."""
@@ -168,7 +170,9 @@ class SentimentAnalyzer:
             raise ValueError("분위기 분석에 seconds와 clean_message 열이 필요합니다.")
 
         interval_seconds = self._validate_interval(interval_minutes)
-        work = df.loc[~df.get("is_system", pd.Series(False, index=df.index)).astype(bool)].copy()
+        non_system = ~df.get("is_system", pd.Series(False, index=df.index)).astype(bool)
+        non_blank = df["clean_message"].astype("string").str.strip().ne("")
+        work = df.loc[non_system & non_blank].copy()
         if work.empty:
             return self._set_empty_timeline(interval_seconds)
 
@@ -185,44 +189,39 @@ class SentimentAnalyzer:
             (work["seconds"].astype(float) // interval_seconds) * interval_seconds
         ).astype(int)
 
-        final_bin = int(work["seconds"].max() // interval_seconds) * interval_seconds
-        records = []
-        for start_seconds in range(0, final_bin + interval_seconds, interval_seconds):
-            group = work.loc[work["time_seconds"].eq(start_seconds)]
-            message_count = int(len(group))
-            if message_count == 0:
-                valence = math.nan
-                arousal = math.nan
-                sentiment_message_count = 0
-                evidence_count = 0
-                coverage = 0.0
-            else:
-                valence_rows = group.loc[group["has_valence"]]
-                sentiment_message_count = int(len(valence_rows))
-                if sentiment_message_count:
-                    weights = 0.5 + valence_rows["arousal"].astype(float)
-                    valence = float(
-                        (valence_rows["valence"].astype(float) * weights).sum()
-                        / weights.sum()
-                    )
-                else:
-                    valence = math.nan
-                arousal = float(group["arousal"].astype(float).mean())
-                evidence_count = int(group["evidence_count"].sum())
-                coverage = sentiment_message_count / message_count
-            records.append({
-                "time_seconds": start_seconds,
-                "time_str": self._seconds_to_time(start_seconds),
-                "sentiment_score": valence,
-                "valence": valence,
-                "arousal": arousal,
-                "message_count": message_count,
-                "sentiment_message_count": sentiment_message_count,
-                "evidence_count": evidence_count,
-                "coverage": round(coverage, 4),
-            })
-
-        self.sentiment_results = pd.DataFrame(records)
+        final_bin, _ = timeline_bounds(float(work["seconds"].max()), interval_seconds)
+        work["valence_weight"] = (0.5 + work["arousal"].astype(float)).where(
+            work["has_valence"], 0.0
+        )
+        work["weighted_valence"] = (
+            work["valence"].astype(float) * work["valence_weight"]
+        )
+        grouped = work.groupby("time_seconds", observed=False).agg(
+            message_count=("clean_message", "size"),
+            sentiment_message_count=("has_valence", "sum"),
+            evidence_count=("evidence_count", "sum"),
+            arousal_sum=("arousal", "sum"),
+            valence_weight=("valence_weight", "sum"),
+            weighted_valence=("weighted_valence", "sum"),
+        )
+        starts = pd.RangeIndex(0, final_bin + interval_seconds, interval_seconds)
+        timeline = pd.DataFrame({"time_seconds": starts}).join(grouped, on="time_seconds")
+        integer_columns = ["message_count", "sentiment_message_count", "evidence_count"]
+        timeline[integer_columns] = timeline[integer_columns].fillna(0).astype(int)
+        populated = timeline["message_count"].gt(0)
+        has_valence = timeline["sentiment_message_count"].gt(0)
+        timeline["arousal"] = (
+            timeline["arousal_sum"] / timeline["message_count"]
+        ).where(populated, math.nan)
+        timeline["valence"] = (
+            timeline["weighted_valence"] / timeline["valence_weight"]
+        ).where(has_valence, math.nan)
+        timeline["sentiment_score"] = timeline["valence"]
+        timeline["coverage"] = (
+            timeline["sentiment_message_count"] / timeline["message_count"]
+        ).where(populated, 0.0).round(4)
+        timeline["time_str"] = timeline["time_seconds"].apply(self._seconds_to_time)
+        self.sentiment_results = timeline[self.TIMELINE_COLUMNS]
         self.mood_changes = []
         self.analysis_metadata = {
             "interval_seconds": interval_seconds,
@@ -260,13 +259,21 @@ class SentimentAnalyzer:
         }
 
     def detect_mood_changes(
-        self, threshold: float = 0.3, min_change: float = 0.2
+        self,
+        threshold: float = 0.3,
+        min_change: float = 0.2,
+        min_sentiment_messages: int = 2,
+        min_coverage: float = 0.03,
     ) -> List[Dict]:
         if self.sentiment_results is None or len(self.sentiment_results) < 2:
             self.mood_changes = []
             return []
         if threshold < 0 or min_change < 0:
             raise ValueError("변화 감지 기준은 0 이상이어야 합니다.")
+        if min_sentiment_messages < 1:
+            raise ValueError("최소 정서 근거 메시지 수는 1 이상이어야 합니다.")
+        if not math.isfinite(min_coverage) or not 0 <= min_coverage <= 1:
+            raise ValueError("최소 정서 근거 커버리지는 0부터 1 사이여야 합니다.")
 
         changes = []
         df = self.sentiment_results
@@ -275,6 +282,12 @@ class SentimentAnalyzer:
             previous = df.iloc[index - 1]
             current = df.iloc[index]
             if pd.isna(previous["valence"]) or pd.isna(current["valence"]):
+                continue
+            if any(
+                int(row["sentiment_message_count"]) < min_sentiment_messages
+                or float(row["coverage"]) < min_coverage
+                for row in (previous, current)
+            ):
                 continue
             if interval_seconds and current["time_seconds"] - previous["time_seconds"] != interval_seconds:
                 continue
@@ -295,6 +308,7 @@ class SentimentAnalyzer:
                 "type": change_type,
                 "description": self._get_change_description(change_type, change),
                 "evidence_count": int(current["evidence_count"]),
+                "sentiment_message_count": int(current["sentiment_message_count"]),
                 "coverage": float(current["coverage"]),
             })
 
@@ -345,7 +359,9 @@ class SentimentAnalyzer:
                 "Marker Name": f"분위기 변화 - {change['type']}",
                 "Description": (
                     f"{change['description']} / 정서 {change['valence']:+.2f} / "
-                    f"반응 강도 {change['arousal']:.2f}"
+                    f"반응 강도 {change['arousal']:.2f} / "
+                    f"정서 근거 {change['sentiment_message_count']}개 / "
+                    f"커버리지 {change['coverage']:.1%}"
                 ),
                 "In": change["time"],
                 "Out": "",

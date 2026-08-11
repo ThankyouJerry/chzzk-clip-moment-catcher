@@ -190,6 +190,42 @@ def test_system_messages_are_not_density_evidence(tmp_path):
     assert result["events"] == []
 
 
+def test_blank_messages_are_not_density_evidence_or_false_highlights(tmp_path):
+    rows = []
+    for bin_index, count in enumerate([1, 1, 20, 1, 1]):
+        for index in range(count):
+            message = "" if bin_index == 2 else "chat"
+            rows.append(row(bin_index * 60 + index, f"u{index}", message))
+    analyzer = load_rows(tmp_path, rows)
+
+    result = analyzer.analyze_chat_density(1, sensitivity=3)
+
+    assert analyzer.session_info["blank_messages"] == 20
+    assert result["total_count"] == 4
+    assert [item["count"] for item in result["timeline"]] == [1, 1, 0, 1, 1]
+    assert result["events"] == []
+
+
+def test_density_with_no_usable_chat_reports_no_evidence(tmp_path):
+    analyzer = load_rows(
+        tmp_path,
+        [row(1, "[SYSTEM]", "notice"), row(241, "user", "")],
+    )
+
+    result = analyzer.analyze_chat_density(1)
+
+    assert result["total_count"] == 0
+    assert result["status"] == "no_evidence"
+    assert result["events"] == []
+
+
+def test_timeline_rejects_an_unbounded_number_of_bins(tmp_path):
+    analyzer = load_rows(tmp_path, [row(3_599_996_400)])
+
+    with pytest.raises(ValueError, match="시간 구간을 .*개 생성"):
+        analyzer.analyze_chat_density(1 / 60)
+
+
 def test_keyword_reports_message_and_occurrence_counts_separately(tmp_path):
     analyzer = load_rows(
         tmp_path,

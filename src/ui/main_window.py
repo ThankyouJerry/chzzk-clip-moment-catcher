@@ -425,6 +425,7 @@ class MainWindow(QMainWindow):
         status_text = {
             "ok": "통계적으로 구분되는 사건을 찾았습니다.",
             "no_events": "현재 조건에서 뚜렷한 사건을 찾지 못했습니다.",
+            "no_evidence": "분석할 일반 채팅이 없어 통계 판정을 보류했습니다.",
             "insufficient_data": "시간 구간이 3개 미만이라 통계 판정을 보류했습니다.",
         }.get(result["status"], result["status"])
         if kind == "keyword":
@@ -515,14 +516,16 @@ class MainWindow(QMainWindow):
         summary = (
             f"전체 정서 방향 {valence_text} / 평균 반응 강도 {arousal_text} / "
             f"정서 근거 커버리지 {float(summary_data['coverage']):.1%}\n"
-            f"분석 채팅 {int(summary_data['message_count']):,}개 / 변화 지점 {len(changes)}개 / 간격 {interval:g}분"
+            f"분석 채팅 {int(summary_data['message_count']):,}개 / 변화 지점 {len(changes)}개 / 간격 {interval:g}분\n"
+            "변화 판정: 인접 구간 모두 정서 근거 2개 이상 · 커버리지 3% 이상"
         )
         figure = self._make_sentiment_figure(timeline, changes)
         columns = [
             ("time_seconds", "시점"), ("type", "유형"),
             ("valence", "정서 방향"), ("arousal", "반응 강도"),
             ("change", "변화량"), ("coverage", "근거 커버리지"),
-            ("evidence_count", "근거 수"), ("description", "설명"),
+            ("sentiment_message_count", "정서 근거 메시지"),
+            ("evidence_count", "근거 신호"), ("description", "설명"),
         ]
         self._add_result_tab("분위기", summary, figure, changes, columns)
 
