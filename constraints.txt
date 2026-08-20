@@ -1,5 +1,5 @@
 # Exact transitive versions shared by local builds and GitHub Actions.
-PyQt6-Qt6==6.8.2
+PyQt6-Qt6==6.11.1
 PyQt6-sip==13.12.0
 altgraph==0.17.5
 contourpy==1.3.3
