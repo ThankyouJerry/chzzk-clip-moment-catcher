@@ -106,7 +106,7 @@ def test_adjacent_spike_bins_merge_and_marker_uses_raw_peak_time(tmp_path):
     assert event["unique_users"] == 10
 
 
-def test_merged_event_counts_the_gap_bin_used_for_participants_and_confidence(tmp_path):
+def test_low_gap_keeps_two_editorial_peaks_separate(tmp_path):
     counts = [10, 10, 30, 10, 30, 10, 10]
     rows = []
     for bin_index, count in enumerate(counts):
@@ -118,21 +118,49 @@ def test_merged_event_counts_the_gap_bin_used_for_participants_and_confidence(tm
     result = analyzer.analyze_chat_density(1, sensitivity=2)
 
     assert result["status"] == "ok"
+    assert len(result["events"]) == 2
+    assert [item["start_seconds"] for item in result["events"]] == [120, 240]
+    assert [item["end_seconds"] for item in result["events"]] == [180, 300]
+    timeline = analyzer.get_density_timeline()
+    assert timeline.iloc[2]["event_id"] == 1
+    assert pd.isna(timeline.iloc[3]["event_id"])
+    assert timeline.iloc[4]["event_id"] == 2
+
+
+def test_elevated_valley_remains_one_sustained_event(tmp_path):
+    counts = [10, 10, 30, 25, 30, 10, 10]
+    rows = [
+        row(bin_index * 60 + index, f"u{index % 10}")
+        for bin_index, count in enumerate(counts)
+        for index in range(count)
+    ]
+    analyzer = load_rows(tmp_path, rows)
+
+    result = analyzer.analyze_chat_density(1, sensitivity=2)
+
     assert len(result["events"]) == 1
-    event = result["events"][0]
-    assert event["start_seconds"] == 120
-    assert event["end_seconds"] == 300
-    assert event["count"] == 70
-    assert event["baseline"] == pytest.approx(13.333)
-    assert event["lift"] == pytest.approx(1.75)
-    assert event["unique_users"] == 11
-    assert event["top_user_share"] == pytest.approx(0.143)
-    assert event["confidence"] == pytest.approx(0.826)
-    event_bins = analyzer.get_density_timeline().iloc[2:5]
-    assert event_bins["event_id"].eq(1).all()
+    assert result["events"][0]["start_seconds"] == 120
+    assert result["events"][0]["end_seconds"] == 300
+    assert result["events"][0]["count"] == 85
 
 
-def test_event_end_at_source_boundary_excludes_the_next_bin_row(tmp_path):
+def test_sustained_surge_does_not_contaminate_its_own_baseline(tmp_path):
+    counts = [10, 10, 30, 30, 30, 10, 10]
+    rows = [
+        row(bin_index * 60 + index, f"u{index % 10}")
+        for bin_index, count in enumerate(counts)
+        for index in range(count)
+    ]
+    analyzer = load_rows(tmp_path, rows)
+
+    result = analyzer.analyze_chat_density(1, sensitivity=2)
+
+    assert len(result["events"]) == 1
+    assert result["events"][0]["start_seconds"] == 120
+    assert result["events"][0]["end_seconds"] == 300
+
+
+def test_separate_event_end_at_source_boundary_excludes_the_next_bin_row(tmp_path):
     counts = [10, 10, 30, 10, 30]
     rows = []
     for bin_index, count in enumerate(counts):
@@ -145,15 +173,14 @@ def test_event_end_at_source_boundary_excludes_the_next_bin_row(tmp_path):
     result = analyzer.analyze_chat_density(1, sensitivity=3)
 
     assert result["status"] == "ok"
-    assert len(result["events"]) == 1
-    event = result["events"][0]
-    assert event["start_seconds"] == 120
+    assert len(result["events"]) == 2
+    event = result["events"][1]
+    assert event["start_seconds"] == 240
     assert event["end_seconds"] == 300
-    assert event["count"] == 70
-    assert event["unique_users"] == 11
-    assert event["top_user_share"] == pytest.approx(0.143)
+    assert event["count"] == 30
+    assert event["unique_users"] == 10
     timeline = analyzer.get_density_timeline()
-    assert timeline.iloc[2:5]["event_id"].eq(1).all()
+    assert timeline.iloc[4]["event_id"] == 2
     assert pd.isna(timeline.iloc[5]["event_id"])
 
 
@@ -238,3 +265,38 @@ def test_keyword_reports_message_and_occurrence_counts_separately(tmp_path):
     assert result["occurrence_count"] == 3
     assert [item["count"] for item in result["timeline"]] == [2, 1, 0]
     assert analyzer.density_results is None
+
+
+def test_keyword_dominance_uses_occurrences_and_stable_ids(tmp_path):
+    path = tmp_path / "keyword-identities.csv"
+    rows = [
+        {"재생시간": "00:00:01", "닉네임": "same", "id": "base", "메시지": "other"},
+        {
+            "재생시간": "00:02:01",
+            "닉네임": "same",
+            "id": "heavy",
+            "메시지": " ".join(["wow"] * 20),
+        },
+    ]
+    rows.extend(
+        {
+            "재생시간": f"00:02:0{index + 2}",
+            "닉네임": "same",
+            "id": f"user-{index}",
+            "메시지": "wow",
+        }
+        for index in range(4)
+    )
+    rows.append(
+        {"재생시간": "00:04:01", "닉네임": "same", "id": "tail", "메시지": "other"}
+    )
+    pd.DataFrame(rows).to_csv(path, index=False, encoding="utf-8-sig")
+    analyzer = ChatAnalyzer()
+    analyzer.load_csv(path)
+
+    result = analyzer.analyze_keyword("wow", 1, sensitivity=2)
+
+    assert len(result["events"]) == 1
+    event = result["events"][0]
+    assert event["unique_users"] == 5
+    assert event["top_user_share"] == pytest.approx(20 / 24, abs=0.001)

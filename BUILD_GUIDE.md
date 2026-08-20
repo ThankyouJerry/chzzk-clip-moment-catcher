@@ -8,11 +8,11 @@
 | macOS Intel | `macos-15-intel` | `ChzzkClipMomentCatcher-macOS-x86_64.zip` |
 | macOS Apple Silicon | `macos-14` | `ChzzkClipMomentCatcher-macOS-arm64.zip` |
 
-워크플로우는 Python 3.12와 고정된 의존성을 사용합니다. 모든 운영체제 테스트가 통과해야 빌드가 시작됩니다.
+워크플로우는 Python 3.12, 고정된 최상위·간접 의존성, 공식 바이너리 휠을 사용합니다. 외부 Actions는 검토한 커밋 SHA로 고정되어 있으며 모든 운영체제 테스트가 통과해야 빌드가 시작됩니다.
 
 ## 로컬 QA
 
-개발 의존성 설치와 운영체제별 테스트 명령은 [CONTRIBUTING.md의 테스트 절차](CONTRIBUTING.md#테스트)를 기준으로 사용합니다.
+개발 의존성 설치와 운영체제별 테스트 명령은 [CONTRIBUTING.md의 테스트 절차](CONTRIBUTING.md#테스트)를 기준으로 사용합니다. `scripts/verify_release_version.py`는 앱 버전과 변경 이력, 태그가 일치하는지 검사합니다.
 
 ## 로컬 빌드
 
@@ -30,6 +30,8 @@ build_windows.bat
 
 PyInstaller는 실행 중인 운영체제용 패키지만 만들 수 있습니다. macOS에서 Windows 실행 파일을 직접 만들지 않고 GitHub Actions의 Windows 러너를 사용합니다.
 
+두 로컬 빌드 스크립트는 `.build-venv` 전용 환경을 새로 만들고 테스트를 통과한 뒤 패키징합니다. 생성된 앱과 ZIP은 `scripts/verify_package_contents.py`로 검사해 테스트·예제·샘플 데이터·Python 소스가 포함되지 않았는지 확인합니다.
+
 ## Actions 수동 실행
 
 1. 저장소의 `Actions` 탭을 엽니다.
@@ -46,8 +48,8 @@ git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
-태그는 코드의 `src/version.py` 버전과 일치시켜야 합니다. 태그 생성과 릴리즈 게시는 기능 검증이 끝난 뒤 명시적으로 진행합니다.
+태그는 코드의 `src/version.py` 버전 및 `CHANGELOG.md`의 릴리스 항목과 일치해야 합니다. 태그 생성과 릴리즈 게시는 기능 검증이 끝난 뒤 명시적으로 진행합니다.
 
 ## macOS 서명 한계
 
-Actions와 로컬 스크립트는 클라우드 폴더가 추가하는 Finder 메타데이터의 영향을 피하기 위해 임시 경로에서 앱을 정리한 뒤 ad-hoc 서명을 적용합니다. 이어서 `codesign --verify --deep --strict` 검증과 패키지 실행 확인을 수행합니다. Apple Developer ID 서명과 공증은 포함하지 않으므로 배포 환경에서는 Gatekeeper 확인이 나타날 수 있습니다.
+Actions와 로컬 스크립트는 클라우드 폴더가 추가하는 Finder 메타데이터의 영향을 피하기 위해 임시 경로에서 앱을 정리한 뒤 ad-hoc 서명을 적용합니다. 이어서 `codesign --verify --deep --strict` 검증, 모든 Mach-O 파일의 macOS 12 호환성 검사와 패키지 실행 확인을 수행합니다. ZIP에는 Finder·AppleDouble 메타데이터를 넣지 않고, 압축을 다시 푼 앱의 서명도 재검증합니다. Apple Developer ID 서명과 공증은 포함하지 않으므로 배포 환경에서는 Gatekeeper 확인이 나타날 수 있습니다.

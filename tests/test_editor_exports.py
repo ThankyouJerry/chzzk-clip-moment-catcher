@@ -23,6 +23,7 @@ def event(peak: float, start: float = 0, end: float = 60):
         "confidence": 0.9,
         "unique_users": 12,
         "top_user_share": 0.2,
+        "duplicate_share": 0.0,
     }
 
 
@@ -34,7 +35,7 @@ def analyzer_with_density_events(*events):
     return analyzer
 
 
-def test_editor_moments_clip_pre_and_post_roll_at_media_boundaries():
+def test_editor_moments_preserve_requested_roll_when_media_duration_is_unknown():
     analyzer = analyzer_with_density_events(
         event(5, 0, 20),
         {**event(95, 80, 100), "event_id": 2},
@@ -47,8 +48,22 @@ def test_editor_moments_clip_pre_and_post_roll_at_media_boundaries():
     assert moments[0]["clip_end_seconds"] == 25
     assert moments[0]["pre_roll_seconds"] == 5
     assert moments[1]["clip_start_seconds"] == 80
-    assert moments[1]["clip_end_seconds"] == 100
-    assert moments[1]["post_roll_seconds"] == 5
+    assert moments[1]["clip_end_seconds"] == 115
+    assert moments[1]["post_roll_seconds"] == 20
+
+
+def test_editor_moments_clip_post_roll_when_media_duration_is_known():
+    analyzer = analyzer_with_density_events(event(95, 80, 100))
+
+    moments = analyzer.build_editor_moments(
+        "density",
+        15,
+        20,
+        media_duration_seconds=100,
+    )
+
+    assert moments[0]["clip_end_seconds"] == 100
+    assert moments[0]["post_roll_seconds"] == 5
 
 
 def test_editor_csv_is_a_labeled_work_table(tmp_path):
@@ -93,7 +108,21 @@ def test_keyword_editor_csv_labels_occurrences_instead_of_messages(tmp_path):
     frame = pd.read_csv(path, encoding="utf-8-sig")
     assert frame.loc[0, "키워드 출현 횟수"] == 40
     assert frame.loc[0, "피크 15초 키워드 출현"] == 20
-    assert frame.loc[0, "닉네임 기준 참여자 수"] == 12
+    assert frame.loc[0, "ID 우선 참여자 수"] == 12
+
+
+@pytest.mark.parametrize("keyword", ["=1+1", "+SUM(A1:A2)", "-2+3", "@cmd"])
+def test_editor_csv_escapes_spreadsheet_formula_prefixes(tmp_path, keyword):
+    analyzer = ChatAnalyzer()
+    analyzer.keyword_results = pd.DataFrame([event(30)])
+    analyzer.keyword_metadata = {"kind": "keyword", "keyword": keyword}
+    path = tmp_path / "safe.csv"
+
+    analyzer.export_editor_csv(path, "keyword")
+
+    frame = pd.read_csv(path, encoding="utf-8-sig", keep_default_na=False)
+    assert frame.loc[0, "키워드"] == "'" + keyword
+    assert frame.loc[0, "구간 이름"].startswith("'")
 
 
 def test_premiere_xml_uses_actual_peak_frame_and_escapes_text(tmp_path):

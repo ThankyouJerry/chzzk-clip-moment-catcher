@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import sys
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
@@ -11,7 +11,7 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 from version import APP_VERSION, BUNDLE_IDENTIFIER
 
-datas = collect_data_files("matplotlib") + collect_data_files("wordcloud")
+datas = collect_data_files("wordcloud", includes=["stopwords"])
 binaries = collect_dynamic_libs("wordcloud") + collect_dynamic_libs("PIL")
 hiddenimports = [
     "PyQt6.QtCore",
@@ -21,6 +21,8 @@ hiddenimports = [
     "ui.main_window",
     "ui.styles",
     "core.analyzer",
+    "core.errors",
+    "core.file_io",
     "core.sentiment_analyzer",
     "core.timeline",
     "core.wordcloud_gen",
@@ -32,12 +34,27 @@ analysis = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[str(ROOT / "hooks")],
+    hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=["tkinter", "pytest"],
     noarchive=False,
 )
+
+forbidden_data_parts = {"__pycache__", "examples", "sample_data", "test", "tests"}
+forbidden_data_suffixes = {".py", ".pyc", ".pyo"}
+
+
+def is_runtime_data(entry):
+    destination = PurePosixPath(str(entry[0]).replace("\\", "/"))
+    parts = {part.casefold() for part in destination.parts}
+    return not (
+        parts & forbidden_data_parts
+        or destination.suffix.casefold() in forbidden_data_suffixes
+    )
+
+
+analysis.datas = [entry for entry in analysis.datas if is_runtime_data(entry)]
 pyz = PYZ(analysis.pure)
 
 executable = EXE(

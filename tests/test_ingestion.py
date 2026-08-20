@@ -88,6 +88,18 @@ def test_split_csv_parts_are_discovered_and_merged(tmp_path):
     assert analyzer.df["메시지"].tolist() == ["first", "second"]
 
 
+def test_split_csv_discovery_is_case_insensitive(tmp_path):
+    first = tmp_path / "VOD_PART001.CSV"
+    second = tmp_path / "vod_part002.cSv"
+    write_csv(first, [valid_row(time="00:00:01", message="first")])
+    write_csv(second, [valid_row(time="00:00:02", message="second")])
+
+    analyzer = ChatAnalyzer()
+    assert analyzer.load_csv(second) == 2
+    assert analyzer.session_info["file_count"] == 2
+    assert analyzer.df["메시지"].tolist() == ["first", "second"]
+
+
 def test_legacy_exporter_schema_and_iso_elapsed_time_are_supported(tmp_path):
     source = tmp_path / "legacy.csv"
     write_csv(
@@ -153,6 +165,88 @@ def test_bad_time_report_names_its_split_file_and_source_row(tmp_path):
 
     with pytest.raises(ValueError, match=r"vod_d_p002\.csv 2행"):
         ChatAnalyzer().load_csv(first)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "재생시간,닉네임,메시지\n00:00:01,user,chat,extra\n",
+        "재생시간,닉네임,메시지\n00:00:01,user\n",
+        '재생시간,닉네임,메시지\n00:00:01,user,"unterminated\n',
+    ],
+)
+def test_malformed_rows_are_rejected_instead_of_shifted(tmp_path, body):
+    path = tmp_path / "malformed.csv"
+    path.write_text(body, encoding="utf-8-sig")
+
+    with pytest.raises(ValueError, match="열 수|인용 부호"):
+        ChatAnalyzer().load_csv(path)
+
+
+def test_nul_and_control_characters_are_rejected(tmp_path):
+    path = tmp_path / "nul.csv"
+    path.write_bytes(
+        "재생시간,닉네임,메시지\n00:00:01,user,before\x00after\n".encode("utf-8-sig")
+    )
+
+    with pytest.raises(ValueError, match="제어문자"):
+        ChatAnalyzer().load_csv(path)
+
+
+def test_quoted_commas_and_multiline_messages_are_preserved(tmp_path):
+    path = tmp_path / "quoted.csv"
+    path.write_text(
+        '재생시간,닉네임,메시지\n00:00:01,user,"첫 줄, 쉼표\n둘째 줄"\n',
+        encoding="utf-8-sig",
+    )
+
+    analyzer = ChatAnalyzer()
+    analyzer.load_csv(path)
+
+    assert analyzer.df.iloc[0]["메시지"] == "첫 줄, 쉼표\n둘째 줄"
+
+
+def test_conflicting_legacy_and_current_columns_are_rejected(tmp_path):
+    path = tmp_path / "collision.csv"
+    write_csv(
+        path,
+        [
+            {
+                "Timestamp": "1970-01-01T00:00:02.000Z",
+                "재생시간": "00:00:01",
+                "User ID": "legacy-user",
+                "닉네임": "current-user",
+                "Message": "legacy",
+                "메시지": "current",
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="이전 열과 현재 열"):
+        ChatAnalyzer().load_csv(path)
+
+
+def test_input_size_limit_is_enforced_before_parsing(tmp_path, monkeypatch):
+    path = tmp_path / "large.csv"
+    write_csv(path, [valid_row()])
+    monkeypatch.setattr(ChatAnalyzer, "MAX_TOTAL_INPUT_BYTES", 1)
+
+    with pytest.raises(ValueError, match="크기가 .* 제한을 초과"):
+        ChatAnalyzer().load_csv(path)
+
+
+def test_timestamp_regressions_are_reported_as_quality_warnings(tmp_path):
+    path = tmp_path / "regression.csv"
+    write_csv(
+        path,
+        [valid_row(time="00:00:10"), valid_row(time="00:00:01")],
+    )
+
+    analyzer = ChatAnalyzer()
+    analyzer.load_csv(path)
+
+    assert analyzer.session_info["time_regressions"] == 1
+    assert any("뒤로 간" in warning for warning in analyzer.session_info["quality_warnings"])
 
 
 def test_wordcloud_collapses_reaction_variants_and_keeps_custom_emote_names(tmp_path):

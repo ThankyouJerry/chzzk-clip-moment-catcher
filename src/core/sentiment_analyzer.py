@@ -5,10 +5,12 @@ from __future__ import annotations
 import math
 import re
 import unicodedata
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Sequence
 
 import pandas as pd
 
+from core.errors import TaskCancelled
+from core.file_io import atomic_save
 from core.timeline import timeline_bounds
 
 
@@ -26,6 +28,21 @@ class SentimentAnalyzer:
         "evidence_count",
         "coverage",
     ]
+
+    NEGATED_SIGNALS = (
+        (
+            r"(?:재밌|재미있|좋아하|좋|감사하|고마워하|웃기)(?:지|지는)\s*"
+            r"않(?:아|아요|았어|았어요|다|는다|습니다|네|음|고|지만|을|은)?",
+            -0.55,
+            0.4,
+        ),
+        (
+            r"(?:싫어하|싫|나쁘)(?:지|지는)\s*"
+            r"않(?:아|아요|았어|았어요|다|는다|습니다|네|음|고|지만|을|은)?",
+            0.4,
+            0.35,
+        ),
+    )
 
     PHRASE_SIGNALS = (
         # Negations and negative compounds must run before their positive roots.
@@ -73,6 +90,9 @@ class SentimentAnalyzer:
         self.analysis_metadata = {
             "interval_seconds": interval_seconds or 0,
             "message_count": 0,
+            "sentiment_message_count": 0,
+            "weighted_valence_sum": 0.0,
+            "valence_weight_sum": 0.0,
         }
         return self.sentiment_results
 
@@ -106,6 +126,11 @@ class SentimentAnalyzer:
             occupied.append((start, end))
             valence_signals.append(valence)
             arousal_signals.append(arousal)
+
+        # Match postposed Korean negation first so the positive/negative root is blocked.
+        for pattern, valence, arousal in self.NEGATED_SIGNALS:
+            for match in re.finditer(pattern, text):
+                add_signal(match.start(), match.end(), valence, arousal)
 
         # Repeated chat reactions are one signal, not every overlapping substring.
         for match in re.finditer(r"ㅋ{2,}", text):
@@ -162,7 +187,10 @@ class SentimentAnalyzer:
         return frequency
 
     def analyze_timeline(
-        self, df: pd.DataFrame, interval_minutes: float = 1.0
+        self,
+        df: pd.DataFrame,
+        interval_minutes: float = 1.0,
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> pd.DataFrame:
         if df is None or len(df) == 0:
             return self._set_empty_timeline()
@@ -179,10 +207,13 @@ class SentimentAnalyzer:
         custom_counts = work.get("custom_emote_count", pd.Series(0, index=work.index))
         sentiment_text = work.get("message_raw", work["clean_message"]).astype("string")
         sentiment_text = sentiment_text.str.replace(r"\{:[^:]+:\}", "", regex=True)
-        signals = [
-            self.analyze_message_signals(message, custom_count)
-            for message, custom_count in zip(sentiment_text, custom_counts)
-        ]
+        signals = []
+        for index, (message, custom_count) in enumerate(
+            zip(sentiment_text, custom_counts)
+        ):
+            if index % 1_000 == 0 and cancel_check is not None and cancel_check():
+                raise TaskCancelled("작업이 취소되었습니다.")
+            signals.append(self.analyze_message_signals(message, custom_count))
         signal_frame = pd.DataFrame(signals, index=work.index)
         work = pd.concat([work, signal_frame], axis=1)
         work["time_seconds"] = (
@@ -226,6 +257,9 @@ class SentimentAnalyzer:
         self.analysis_metadata = {
             "interval_seconds": interval_seconds,
             "message_count": int(len(work)),
+            "sentiment_message_count": int(work["has_valence"].sum()),
+            "weighted_valence_sum": float(work["weighted_valence"].sum()),
+            "valence_weight_sum": float(work["valence_weight"].sum()),
         }
         return self.sentiment_results
 
@@ -236,14 +270,20 @@ class SentimentAnalyzer:
                 "arousal": math.nan,
                 "coverage": 0.0,
                 "message_count": 0,
+                "sentiment_message_count": 0,
             }
         timeline = self.sentiment_results
-        valence_rows = timeline.loc[timeline["sentiment_message_count"].gt(0)]
-        if valence_rows.empty:
-            valence = math.nan
+        metadata = self.analysis_metadata or {}
+        valence_weight_sum = float(metadata.get("valence_weight_sum", 0.0))
+        if valence_weight_sum > 0:
+            valence = float(metadata["weighted_valence_sum"]) / valence_weight_sum
         else:
-            weights = valence_rows["sentiment_message_count"].astype(float)
-            valence = float((valence_rows["valence"] * weights).sum() / weights.sum())
+            valence_rows = timeline.loc[timeline["sentiment_message_count"].gt(0)]
+            if valence_rows.empty:
+                valence = math.nan
+            else:
+                weights = valence_rows["sentiment_message_count"].astype(float)
+                valence = float((valence_rows["valence"] * weights).sum() / weights.sum())
         populated = timeline.loc[timeline["message_count"].gt(0)]
         message_count = int(populated["message_count"].sum())
         arousal = (
@@ -256,6 +296,7 @@ class SentimentAnalyzer:
             "arousal": arousal,
             "coverage": sentiment_messages / message_count if message_count else 0.0,
             "message_count": message_count,
+            "sentiment_message_count": sentiment_messages,
         }
 
     def detect_mood_changes(
@@ -295,7 +336,16 @@ class SentimentAnalyzer:
             arousal = 0.0 if pd.isna(current["arousal"]) else float(current["arousal"])
             if abs(change) < min_change:
                 continue
-            if max(abs(float(current["valence"])), arousal) < threshold:
+            previous_arousal = (
+                0.0 if pd.isna(previous["arousal"]) else float(previous["arousal"])
+            )
+            if max(
+                abs(float(previous["valence"])),
+                abs(float(current["valence"])),
+                previous_arousal,
+                arousal,
+                abs(change),
+            ) < threshold:
                 continue
             change_type = self._classify_mood_change(float(current["valence"]), change, arousal)
             changes.append({
@@ -351,8 +401,15 @@ class SentimentAnalyzer:
         secs = seconds % 60
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
-    def export_mood_markers(self, output_path: str, top_n: int = 10) -> bool:
-        if not self.mood_changes:
+    def export_mood_markers(
+        self,
+        output_path: str,
+        top_n: int = 10,
+        *,
+        changes: Optional[Sequence[Dict]] = None,
+    ) -> bool:
+        selected_changes = list(self.mood_changes if changes is None else changes)
+        if not selected_changes:
             return False
         markers = [
             {
@@ -368,9 +425,17 @@ class SentimentAnalyzer:
                 "Duration": "",
                 "Marker Type": "Comment",
             }
-            for change in self.mood_changes[:top_n]
+            for change in selected_changes[:top_n]
         ]
-        pd.DataFrame(markers).to_csv(output_path, index=False, encoding="utf-8-sig")
+        frame = pd.DataFrame(markers)
+        atomic_save(
+            output_path,
+            lambda temporary: frame.to_csv(
+                temporary,
+                index=False,
+                encoding="utf-8-sig",
+            ),
+        )
         return True
 
     def get_sentiment_timeline(self) -> Optional[pd.DataFrame]:

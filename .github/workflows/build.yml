@@ -21,8 +21,8 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
           cache: pip
@@ -32,9 +32,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libegl1
       - name: Install dependencies
-        run: python -m pip install -r requirements-dev.txt
+        run: "python -m pip install --only-binary=:all: -r requirements-dev.txt"
+      - name: Verify dependency compatibility
+        run: python -m pip check
       - name: Compile sources
-        run: python -m compileall -q src tests
+        run: python -m compileall -q src tests scripts
+      - name: Verify release metadata
+        run: python scripts/verify_release_version.py
       - name: Run tests
         run: python -m pytest
 
@@ -44,22 +48,24 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
           cache: pip
       - name: Install dependencies
-        run: python -m pip install -r requirements-dev.txt
+        run: "python -m pip install --only-binary=:all: -r requirements-dev.txt"
       - name: Build application
         run: python -m PyInstaller --clean --noconfirm build.spec
       - name: Smoke-check package
         shell: pwsh
         run: ./smoke_windows.ps1
+      - name: Verify package contents
+        run: python scripts/verify_package_contents.py dist/ChzzkClipMomentCatcher
       - name: Create archive
         shell: pwsh
         run: Compress-Archive -Path dist\ChzzkClipMomentCatcher\* -DestinationPath ChzzkClipMomentCatcher-Windows-x86_64.zip
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ChzzkClipMomentCatcher-Windows-x86_64
           path: ChzzkClipMomentCatcher-Windows-x86_64.zip
@@ -79,20 +85,22 @@ jobs:
             arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
           cache: pip
       - name: Install dependencies
-        run: python -m pip install -r requirements-dev.txt
+        run: "python -m pip install --only-binary=:all: -r requirements-dev.txt"
       - name: Build application
         run: python -m PyInstaller --clean --noconfirm build.spec
+      - name: Verify package contents
+        run: python scripts/verify_package_contents.py dist/ChzzkClipMomentCatcher.app
       - name: Apply ad-hoc signature and verify bundle
         run: |
           chmod +x package_macos.sh
           ./package_macos.sh dist/ChzzkClipMomentCatcher.app ChzzkClipMomentCatcher-macOS-${{ matrix.arch }}.zip
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ChzzkClipMomentCatcher-macOS-${{ matrix.arch }}
           path: ChzzkClipMomentCatcher-macOS-${{ matrix.arch }}.zip
@@ -106,15 +114,17 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: ChzzkClipMomentCatcher-*
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           generate_release_notes: true
           body: |
             Windows x86_64와 macOS Intel/Apple Silicon 빌드입니다.
+
+            CSV 입력 검증, 지속 급증 탐지, ID 우선 참여자 신뢰도, 작업 취소와 원자적 저장을 보강했습니다. 자세한 변경 내용은 저장소의 CHANGELOG를 확인하세요.
 
             macOS 앱은 ad-hoc 서명 빌드이며 Apple 공증은 적용되지 않았습니다. 처음 실행할 때 macOS 보안 확인이 필요할 수 있습니다.
           files: |

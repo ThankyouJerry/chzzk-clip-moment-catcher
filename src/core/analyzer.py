@@ -4,16 +4,19 @@ from __future__ import annotations
 Chat Analyzer - Core Analysis Logic
 """
 import csv
+from collections import Counter
 from datetime import datetime, timezone
 import math
 from pathlib import Path
 import re
 import unicodedata
-from typing import Optional, Dict, List, Sequence
+from typing import Callable, Optional, Dict, List, Sequence
 import xml.etree.ElementTree as ET
 
 import pandas as pd
 
+from core.errors import TaskCancelled
+from core.file_io import atomic_save
 from core.timeline import timeline_bounds
 
 
@@ -34,6 +37,16 @@ class ChatAnalyzer:
         r"^\s*(?P<hours>\d+):(?P<minutes>[0-5]\d):(?P<seconds>[0-5]\d)"
         r"(?:\.(?P<fraction>\d{1,3}))?\s*$"
     )
+    LEGACY_TIME_PATTERN = re.compile(
+        r"^1970-01-(?P<day>0[1-9]|[12]\d|3[01])T"
+        r"(?P<hours>[0-2]\d):(?P<minutes>[0-5]\d):(?P<seconds>[0-5]\d)"
+        r"(?:\.(?P<fraction>\d{1,6}))?Z$"
+    )
+    MAX_TOTAL_INPUT_BYTES = 512 * 1024 * 1024
+    MAX_INPUT_ROWS = 5_000_000
+    MAX_COLUMNS = 64
+    MAX_CELL_CHARACTERS = 262_144
+    INVALID_CELL_CONTROLS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
     
     def __init__(self):
         self.df: Optional[pd.DataFrame] = None
@@ -54,7 +67,18 @@ class ChatAnalyzer:
         self.keyword_metadata = None
         self.density_metadata = None
     
-    def load_csv(self, file_path: str) -> int:
+    @staticmethod
+    def _cancel_if_requested(
+        cancel_check: Optional[Callable[[], bool]],
+    ) -> None:
+        if cancel_check is not None and cancel_check():
+            raise TaskCancelled("작업이 취소되었습니다.")
+
+    def load_csv(
+        self,
+        file_path: str,
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ) -> int:
         """
         Load CSV file and return number of messages
         
@@ -65,23 +89,58 @@ class ChatAnalyzer:
             Number of messages loaded
         """
         file_paths = self._discover_csv_parts(Path(file_path))
-        return self.load_csv_files(file_paths)
+        return self.load_csv_files(file_paths, cancel_check=cancel_check)
 
-    def load_csv_files(self, file_paths: Sequence[Path | str]) -> int:
+    def load_csv_files(
+        self,
+        file_paths: Sequence[Path | str],
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ) -> int:
         """Load and validate one CSV or a contiguous exporter part set."""
         paths = [Path(path).expanduser().resolve() for path in file_paths]
         if not paths:
             raise ValueError("선택된 CSV 파일이 없습니다.")
 
-        frames = []
-        encodings = []
-        canonical_columns = None
+        total_bytes = 0
         for path in paths:
             if not path.is_file():
                 raise FileNotFoundError(f"CSV 파일을 찾을 수 없습니다: {path}")
-            self._validate_header(path)
-            frame, encoding = self._read_csv_preserving_text(path)
+            total_bytes += path.stat().st_size
+        if total_bytes > self.MAX_TOTAL_INPUT_BYTES:
+            limit_mib = self.MAX_TOTAL_INPUT_BYTES / (1024 * 1024)
+            raise ValueError(
+                f"분할 파일을 합친 크기가 {limit_mib:,.0f} MiB 제한을 초과합니다. "
+                "필요한 방송 단위로 CSV를 나눠 분석하세요."
+            )
+
+        frames = []
+        encodings = []
+        canonical_columns = None
+        validated_rows = 0
+        for path in paths:
+            self._cancel_if_requested(cancel_check)
+            encoding, row_count = self._validate_csv_structure(
+                path,
+                cancel_check=cancel_check,
+            )
+            validated_rows += row_count
+            if validated_rows > self.MAX_INPUT_ROWS:
+                raise ValueError(
+                    f"분할 파일을 합친 행 수가 {self.MAX_INPUT_ROWS:,}행 제한을 초과합니다. "
+                    "필요한 방송 단위로 CSV를 나눠 분석하세요."
+                )
+            frame, encoding = self._read_csv_preserving_text(path, encoding)
             frame.columns = [str(column).lstrip("\ufeff").strip() for column in frame.columns]
+            collisions = [
+                f"{source}/{target}"
+                for source, target in self.LEGACY_COLUMN_ALIASES.items()
+                if source in frame.columns and target in frame.columns
+            ]
+            if collisions:
+                raise ValueError(
+                    f"{path.name}: 이전 열과 현재 열이 함께 있어 해석할 수 없습니다: "
+                    f"{', '.join(collisions)}"
+                )
             frame = self._normalize_exporter_columns(frame)
             current_columns = list(frame.columns)
             if canonical_columns is None:
@@ -109,6 +168,8 @@ class ChatAnalyzer:
         parsed_seconds = []
         invalid_times = []
         for position, value in enumerate(combined["재생시간"]):
+            if position % 5_000 == 0:
+                self._cancel_if_requested(cancel_check)
             try:
                 parsed_seconds.append(self.time_to_seconds(value))
             except ValueError:
@@ -133,6 +194,30 @@ class ChatAnalyzer:
             lambda value: len(re.findall(r"\{:[^:]+:\}", str(value)))
         )
         combined["is_system"] = combined["닉네임"].str.strip().eq("[SYSTEM]")
+        identifier = (
+            combined["id"].astype("string").str.strip()
+            if "id" in combined.columns
+            else pd.Series("", index=combined.index, dtype="string")
+        )
+        nickname = combined["닉네임"].astype("string").str.strip().str.casefold()
+        combined["participant_key"] = (
+            "id:" + identifier.str.casefold()
+        ).where(identifier.ne(""), "nickname:" + nickname)
+
+        duplicate_columns = list(self.REQUIRED_COLUMNS)
+        if "id" in combined.columns:
+            duplicate_columns.insert(2, "id")
+        duplicate_rows = int(combined[duplicate_columns].duplicated().sum())
+        time_regressions = int(combined["seconds"].diff().lt(0).sum())
+        quality_warnings = []
+        if duplicate_rows:
+            quality_warnings.append(
+                f"완전히 같은 채팅 행 {duplicate_rows:,}개가 포함되어 분석 신뢰도가 낮아질 수 있습니다."
+            )
+        if time_regressions:
+            quality_warnings.append(
+                f"재생시간이 이전 행보다 뒤로 간 지점 {time_regressions:,}개를 확인하세요."
+            )
 
         self.df = combined
         self.reset_results()
@@ -140,7 +225,10 @@ class ChatAnalyzer:
             "source_files": [str(path) for path in paths],
             "file_count": len(paths),
             "row_count": len(combined),
-            "duplicate_rows": int(combined[list(self.REQUIRED_COLUMNS)].duplicated().sum()),
+            "duplicate_rows": duplicate_rows,
+            "duplicate_ratio": duplicate_rows / len(combined),
+            "time_regressions": time_regressions,
+            "quality_warnings": quality_warnings,
             "system_rows": int(combined["is_system"].sum()),
             "blank_messages": int(combined["message_raw"].str.strip().eq("").sum()),
             "blank_clean_messages": int(combined["clean_message"].str.strip().eq("").sum()),
@@ -167,9 +255,14 @@ class ChatAnalyzer:
 
         base = match.group("base")
         candidates = []
-        for candidate in selected_path.parent.glob("*.csv"):
+        for candidate in selected_path.parent.iterdir():
+            if not candidate.is_file() or candidate.suffix.casefold() != ".csv":
+                continue
             candidate_match = matched_pattern.match(candidate.name)
-            if candidate_match and candidate_match.group("base") == base:
+            if (
+                candidate_match
+                and candidate_match.group("base").casefold() == base.casefold()
+            ):
                 candidates.append((int(candidate_match.group("part")), candidate))
 
         candidates.sort(key=lambda item: item[0])
@@ -193,54 +286,109 @@ class ChatAnalyzer:
         }
         return frame.rename(columns=rename_map)
 
-    def _validate_header(self, path: Path) -> None:
-        """Reject duplicate or empty columns before pandas renames them silently."""
-        with path.open("rb") as stream:
-            raw = stream.readline(1024 * 1024 + 1)
-        if len(raw) > 1024 * 1024:
-            raise ValueError(f"{path.name}: CSV 헤더가 비정상적으로 깁니다.")
-
-        first_line = None
+    def _validate_csv_structure(
+        self,
+        path: Path,
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ) -> tuple[str, int]:
+        """Stream every record so malformed CSV cannot become plausible evidence."""
+        last_decode_error = None
         for encoding in ("utf-8-sig", "utf-8", "cp949"):
             try:
-                first_line = raw.rstrip(b"\r\n").decode(encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-        if not first_line:
-            raise ValueError(f"{path.name}: CSV 헤더를 읽을 수 없습니다.")
-
-        try:
-            columns = next(csv.reader([first_line]))
-        except (csv.Error, StopIteration) as error:
-            raise ValueError(f"{path.name}: CSV 헤더 형식이 올바르지 않습니다.") from error
-        normalized = [column.lstrip("\ufeff").strip() for column in columns]
-        if any(not column for column in normalized):
-            raise ValueError(f"{path.name}: 비어 있는 열 이름이 있습니다.")
-        duplicates = sorted({column for column in normalized if normalized.count(column) > 1})
-        if duplicates:
-            raise ValueError(f"{path.name}: 중복된 열 이름이 있습니다: {', '.join(duplicates)}")
-
-    def _read_csv_preserving_text(self, path: Path) -> tuple[pd.DataFrame, str]:
-        last_error = None
-        for encoding in ("utf-8-sig", "utf-8", "cp949"):
-            try:
-                frame = pd.read_csv(
+                return encoding, self._validate_csv_structure_with_encoding(
                     path,
-                    encoding=encoding,
-                    dtype="string",
-                    keep_default_na=False,
+                    encoding,
+                    cancel_check,
                 )
-                return frame, encoding
             except UnicodeDecodeError as error:
-                last_error = error
-        raise ValueError(f"{path.name}: 지원하지 않는 CSV 인코딩입니다.") from last_error
+                last_decode_error = error
+        raise ValueError(f"{path.name}: 지원하지 않는 CSV 인코딩입니다.") from last_decode_error
+
+    def _validate_csv_structure_with_encoding(
+        self,
+        path: Path,
+        encoding: str,
+        cancel_check: Optional[Callable[[], bool]],
+    ) -> int:
+        previous_limit = csv.field_size_limit()
+        csv.field_size_limit(self.MAX_CELL_CHARACTERS)
+        try:
+            with path.open("r", encoding=encoding, newline="") as stream:
+                reader = csv.reader(stream, strict=True)
+                try:
+                    columns = next(reader)
+                except StopIteration as error:
+                    raise ValueError(f"{path.name}: CSV 헤더를 읽을 수 없습니다.") from error
+                normalized = [column.lstrip("\ufeff").strip() for column in columns]
+                if not normalized or any(not column for column in normalized):
+                    raise ValueError(f"{path.name}: 비어 있는 열 이름이 있습니다.")
+                if len(normalized) > self.MAX_COLUMNS:
+                    raise ValueError(
+                        f"{path.name}: 열이 {len(normalized):,}개로 {self.MAX_COLUMNS}개 제한을 초과합니다."
+                    )
+                duplicates = sorted(
+                    column for column, count in Counter(normalized).items() if count > 1
+                )
+                if duplicates:
+                    raise ValueError(
+                        f"{path.name}: 중복된 열 이름이 있습니다: {', '.join(duplicates)}"
+                    )
+
+                row_count = 0
+                for row_count, row in enumerate(reader, start=1):
+                    if row_count % 5_000 == 0:
+                        self._cancel_if_requested(cancel_check)
+                    if len(row) != len(normalized):
+                        raise ValueError(
+                            f"{path.name} {reader.line_num}행: 열 수가 헤더와 다릅니다 "
+                            f"({len(row)}개, 예상 {len(normalized)}개)."
+                        )
+                    for cell in row:
+                        if len(cell) > self.MAX_CELL_CHARACTERS:
+                            raise ValueError(
+                                f"{path.name} {reader.line_num}행: 셀이 허용 길이를 초과합니다."
+                            )
+                        if self.INVALID_CELL_CONTROLS.search(cell):
+                            raise ValueError(
+                                f"{path.name} {reader.line_num}행: NUL 또는 허용되지 않는 제어문자가 있습니다."
+                            )
+                    if row_count > self.MAX_INPUT_ROWS:
+                        raise ValueError(
+                            f"{path.name}: {self.MAX_INPUT_ROWS:,}행 제한을 초과합니다."
+                        )
+                return row_count
+        except csv.Error as error:
+            if "NUL" in str(error).upper():
+                raise ValueError(
+                    f"{path.name}: NUL 또는 허용되지 않는 제어문자가 있습니다."
+                ) from error
+            raise ValueError(
+                f"{path.name}: CSV 인용 부호 또는 셀 형식이 올바르지 않습니다."
+            ) from error
+        finally:
+            csv.field_size_limit(previous_limit)
+
+    def _read_csv_preserving_text(
+        self,
+        path: Path,
+        encoding: str,
+    ) -> tuple[pd.DataFrame, str]:
+        frame = pd.read_csv(
+            path,
+            encoding=encoding,
+            dtype="string",
+            keep_default_na=False,
+            index_col=False,
+            on_bad_lines="error",
+        )
+        return frame, encoding
     
     def time_to_seconds(self, time_str: str) -> float:
         """Convert a validated HH:MM:SS[.sss] timestamp to seconds."""
         value = str(time_str).strip()
         match = self.TIME_PATTERN.fullmatch(value)
-        if not match and value.startswith("1970-"):
+        legacy_match = self.LEGACY_TIME_PATTERN.fullmatch(value)
+        if not match and legacy_match:
             try:
                 parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
                 if parsed.tzinfo is None:
@@ -284,7 +432,13 @@ class ChatAnalyzer:
         text = re.sub(r"\s+", " ", text)
         return text.strip()
     
-    def analyze_keyword(self, keyword: str, interval_minutes: float, sensitivity: float = 2.0) -> Dict:
+    def analyze_keyword(
+        self,
+        keyword: str,
+        interval_minutes: float,
+        sensitivity: float = 2.0,
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ) -> Dict:
         """Find sustained keyword bursts without sharing density-analysis state."""
         self._require_loaded()
         interval_seconds, sensitivity = self._validate_analysis_params(
@@ -293,6 +447,7 @@ class ChatAnalyzer:
         keyword = str(keyword).strip()
         if not keyword:
             raise ValueError("검색 키워드를 입력하세요.")
+        self._cancel_if_requested(cancel_check)
 
         analysis_rows = self._get_analysis_rows()
         folded_keyword = keyword.casefold()
@@ -317,6 +472,7 @@ class ChatAnalyzer:
             sensitivity,
             minimum_count=2,
             minimum_excess=1,
+            cancel_check=cancel_check,
         )
         self.keyword_timeline = timeline
         self.keyword_results = events
@@ -340,12 +496,18 @@ class ChatAnalyzer:
             "sensitivity": sensitivity,
         }
     
-    def analyze_chat_density(self, interval_minutes: float, sensitivity: float = 2.0) -> Dict:
+    def analyze_chat_density(
+        self,
+        interval_minutes: float,
+        sensitivity: float = 2.0,
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ) -> Dict:
         """Find chat-volume events using a robust local baseline."""
         self._require_loaded()
         interval_seconds, sensitivity = self._validate_analysis_params(
             interval_minutes, sensitivity
         )
+        self._cancel_if_requested(cancel_check)
         analysis_rows = self._get_analysis_rows()
         timeline = self._build_count_timeline(analysis_rows, interval_seconds)
         events, status = self._detect_events(
@@ -356,6 +518,7 @@ class ChatAnalyzer:
             minimum_count=3,
             minimum_excess=2,
             empty_status="no_evidence",
+            cancel_check=cancel_check,
         )
         self.density_timeline = timeline
         self.density_results = events
@@ -443,13 +606,14 @@ class ChatAnalyzer:
         minimum_count: int,
         minimum_excess: int,
         empty_status: str = "no_events",
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> tuple[pd.DataFrame, str]:
         """Detect and merge local spikes, then locate their peak in raw chat time."""
         event_columns = [
             "event_id", "start_seconds", "peak_seconds", "end_seconds",
             "time_seconds", "time_str", "count", "peak_window_count",
             "baseline", "threshold", "lift", "score", "confidence",
-            "unique_users", "top_user_share",
+            "unique_users", "top_user_share", "duplicate_share",
         ]
         timeline["baseline"] = 0.0
         timeline["threshold"] = 0.0
@@ -471,14 +635,17 @@ class ChatAnalyzer:
         local_radius = min(6, max(2, len(counts) // 4))
         candidates = []
         for index, count in enumerate(counts):
+            if index % 1_000 == 0:
+                self._cancel_if_requested(cancel_check)
             left = counts[max(0, index - local_radius):index]
             right = counts[index + 1:min(len(counts), index + local_radius + 1)]
             neighbors = left + right
             if not neighbors:
                 continue
             ordered = sorted(neighbors)
-            baseline = self._median(ordered)
-            deviations = sorted(abs(value - baseline) for value in neighbors)
+            baseline = self._quantile(ordered, 0.40)
+            background_values = [value for value in neighbors if value <= baseline]
+            deviations = sorted(abs(value - baseline) for value in background_values)
             mad = self._median(deviations)
             scale = max(1.0, 1.4826 * mad, math.sqrt(max(baseline, 0.0) + 1.0))
             threshold = baseline + deviation_multiplier * scale
@@ -504,14 +671,30 @@ class ChatAnalyzer:
 
         groups: List[List[int]] = []
         for index in candidates:
-            if groups and index <= groups[-1][-1] + 2:
+            if groups and index == groups[-1][-1] + 1:
                 groups[-1].append(index)
+            elif groups and index == groups[-1][-1] + 2:
+                previous = groups[-1][-1]
+                valley = previous + 1
+                valley_count = counts[valley]
+                valley_baseline = float(timeline.iloc[valley]["baseline"])
+                bridge_level = 0.70 * min(counts[previous], counts[index])
+                if (
+                    valley_count >= minimum_count
+                    and valley_count >= bridge_level
+                    and valley_count > valley_baseline
+                    and (valley_baseline == 0 or valley_count / valley_baseline >= 1.35)
+                ):
+                    groups[-1].append(index)
+                else:
+                    groups.append([index])
             else:
                 groups.append([index])
 
         events = []
         source_end = float(self.df["seconds"].max())
         for event_number, group in enumerate(groups, start=1):
+            self._cancel_if_requested(cancel_check)
             first_index = group[0]
             last_index = group[-1]
             event_indices = list(range(first_index, last_index + 1))
@@ -543,13 +726,31 @@ class ChatAnalyzer:
             threshold = float(event_timeline["threshold"].mean())
             score = float(event_timeline["score"].max())
             lift = count / max(baseline * len(event_indices), 1.0)
-            unique_users = int(event_rows["닉네임"].nunique()) if not event_rows.empty else 0
+            identity_column = (
+                "participant_key" if "participant_key" in event_rows.columns else "닉네임"
+            )
+            unique_users = int(event_rows[identity_column].nunique()) if not event_rows.empty else 0
             if event_rows.empty:
                 top_user_share = 0.0
             else:
-                top_user_share = float(event_rows["닉네임"].value_counts(normalize=True).iloc[0])
+                if peak_count_column is None:
+                    user_weights = event_rows[identity_column].value_counts()
+                else:
+                    user_weights = event_rows.groupby(identity_column, observed=False)[
+                        peak_count_column
+                    ].sum()
+                top_user_share = float(user_weights.max() / max(user_weights.sum(), 1))
+            duplicate_columns = ["seconds", identity_column, "message_raw"]
+            duplicate_columns = [
+                column for column in duplicate_columns if column in event_rows.columns
+            ]
+            duplicate_share = (
+                float(event_rows.duplicated(subset=duplicate_columns).mean())
+                if duplicate_columns and not event_rows.empty
+                else 0.0
+            )
             diversity_factor = min(1.0, unique_users / 5.0) * (1.0 - top_user_share)
-            confidence = min(
+            confidence = (1.0 - min(0.75, duplicate_share)) * min(
                 1.0,
                 max(0.0, 0.45 * min(score / 5.0, 1.0)
                     + 0.35 * min(lift / 3.0, 1.0)
@@ -572,6 +773,7 @@ class ChatAnalyzer:
                 "confidence": round(confidence, 3),
                 "unique_users": unique_users,
                 "top_user_share": round(top_user_share, 3),
+                "duplicate_share": round(duplicate_share, 3),
             })
 
         return pd.DataFrame(events, columns=event_columns), "ok"
@@ -584,6 +786,14 @@ class ChatAnalyzer:
         if len(values) % 2:
             return float(values[middle])
         return float((values[middle - 1] + values[middle]) / 2)
+
+    @staticmethod
+    def _quantile(values: List[float], probability: float) -> float:
+        """Return a conservative lower quantile from an already sorted list."""
+        if not values:
+            return 0.0
+        position = (len(values) - 1) * probability
+        return float(values[int(math.floor(position))])
 
     def _find_actual_peak(
         self,
@@ -664,6 +874,10 @@ class ChatAnalyzer:
         kind: str = "density",
         pre_roll_seconds: float = 15.0,
         post_roll_seconds: float = 20.0,
+        *,
+        events: Optional[pd.DataFrame] = None,
+        metadata: Optional[Dict] = None,
+        media_duration_seconds: Optional[float] = None,
     ) -> List[Dict]:
         """Create editor-ready ranges around each event's raw-chat peak."""
         if kind not in {"density", "keyword"}:
@@ -681,20 +895,30 @@ class ChatAnalyzer:
         ):
             raise ValueError("프리롤과 포스트롤은 0 이상의 유한한 값이어야 합니다.")
 
-        events = self.density_results if kind == "density" else self.keyword_results
-        metadata = self.density_metadata if kind == "density" else self.keyword_metadata
+        if events is None:
+            events = self.density_results if kind == "density" else self.keyword_results
+        if metadata is None:
+            metadata = self.density_metadata if kind == "density" else self.keyword_metadata
         if events is None or metadata is None:
             raise ValueError("먼저 해당 분석을 실행하세요.")
         if events.empty:
             return []
 
-        source_end = float(self.session_info.get("end_seconds", events["end_seconds"].max()))
+        if media_duration_seconds is not None:
+            try:
+                media_duration_seconds = float(media_duration_seconds)
+            except (TypeError, ValueError) as error:
+                raise ValueError("미디어 길이는 숫자여야 합니다.") from error
+            if not math.isfinite(media_duration_seconds) or media_duration_seconds <= 0:
+                raise ValueError("미디어 길이는 0보다 큰 유한한 값이어야 합니다.")
         keyword = str(metadata.get("keyword", ""))
         moments = []
         for number, (_, event) in enumerate(events.iterrows(), start=1):
             peak_seconds = float(event["peak_seconds"])
             clip_start = max(0.0, peak_seconds - pre_roll_seconds)
-            clip_end = min(source_end, peak_seconds + post_roll_seconds)
+            clip_end = peak_seconds + post_roll_seconds
+            if media_duration_seconds is not None:
+                clip_end = min(media_duration_seconds, clip_end)
             label = (
                 f"{keyword} 급증 #{number}" if kind == "keyword"
                 else f"채팅 급증 #{number}"
@@ -721,6 +945,7 @@ class ChatAnalyzer:
                 "confidence": float(event["confidence"]),
                 "unique_users": int(event["unique_users"]),
                 "top_user_share": float(event["top_user_share"]),
+                "duplicate_share": float(event.get("duplicate_share", 0.0)),
             })
         return moments
 
@@ -730,9 +955,20 @@ class ChatAnalyzer:
         kind: str = "density",
         pre_roll_seconds: float = 15.0,
         post_roll_seconds: float = 20.0,
+        *,
+        events: Optional[pd.DataFrame] = None,
+        metadata: Optional[Dict] = None,
+        media_duration_seconds: Optional[float] = None,
     ) -> bool:
         """Export a human-readable editor work table, not a native NLE project."""
-        moments = self.build_editor_moments(kind, pre_roll_seconds, post_roll_seconds)
+        moments = self.build_editor_moments(
+            kind,
+            pre_roll_seconds,
+            post_roll_seconds,
+            events=events,
+            metadata=metadata,
+            media_duration_seconds=media_duration_seconds,
+        )
         count_label = "키워드 출현 횟수" if kind == "keyword" else "이벤트 채팅 수"
         peak_count_label = "피크 15초 키워드 출현" if kind == "keyword" else "피크 15초 채팅 수"
         columns = {
@@ -752,16 +988,33 @@ class ChatAnalyzer:
             "peak_window_count": peak_count_label,
             "lift": "기준 대비 배수",
             "confidence": "신뢰도",
-            "unique_users": "닉네임 기준 참여자 수",
-            "top_user_share": "최다 닉네임 비율",
+            "unique_users": "ID 우선 참여자 수",
+            "top_user_share": "최다 참여자 비율",
+            "duplicate_share": "동일 행 비율",
         }
         frame = pd.DataFrame(moments)
         if frame.empty:
             frame = pd.DataFrame(columns=list(columns))
-        frame[list(columns)].rename(columns=columns).to_csv(
-            output_path, index=False, encoding="utf-8-sig"
+        frame = frame[list(columns)].rename(columns=columns)
+        for column in frame.select_dtypes(include=["object", "string"]).columns:
+            frame[column] = frame[column].map(self._spreadsheet_safe_text)
+        atomic_save(
+            output_path,
+            lambda temporary: frame.to_csv(
+                temporary,
+                index=False,
+                encoding="utf-8-sig",
+            ),
         )
         return True
+
+    @staticmethod
+    def _spreadsheet_safe_text(value: object) -> object:
+        if not isinstance(value, str) or not value:
+            return value
+        if value[0] in "=+-@\t\r\n":
+            return "'" + value
+        return value
 
     @staticmethod
     def _rate_info(fps: float) -> tuple[int, bool, float, str]:
@@ -791,9 +1044,20 @@ class ChatAnalyzer:
         fps: float = 30.0,
         pre_roll_seconds: float = 15.0,
         post_roll_seconds: float = 20.0,
+        *,
+        events: Optional[pd.DataFrame] = None,
+        metadata: Optional[Dict] = None,
+        media_duration_seconds: Optional[float] = None,
     ) -> bool:
         """Export Final Cut Pro 7 XML, which Premiere can exchange with markers."""
-        moments = self.build_editor_moments(kind, pre_roll_seconds, post_roll_seconds)
+        moments = self.build_editor_moments(
+            kind,
+            pre_roll_seconds,
+            post_roll_seconds,
+            events=events,
+            metadata=metadata,
+            media_duration_seconds=media_duration_seconds,
+        )
         timebase, ntsc, actual_fps, _ = self._rate_info(fps)
         duration_seconds = max(
             float(self.session_info.get("end_seconds", 0.0)),
@@ -837,7 +1101,14 @@ class ChatAnalyzer:
         ET.SubElement(characteristics, "height").text = "1080"
         ET.SubElement(characteristics, "anamorphic").text = "FALSE"
         ET.indent(root, space="  ")
-        ET.ElementTree(root).write(output_path, encoding="utf-8", xml_declaration=True)
+        atomic_save(
+            output_path,
+            lambda temporary: ET.ElementTree(root).write(
+                temporary,
+                encoding="utf-8",
+                xml_declaration=True,
+            ),
+        )
         return True
 
     def export_fcpxml(
@@ -847,9 +1118,20 @@ class ChatAnalyzer:
         fps: float = 30.0,
         pre_roll_seconds: float = 15.0,
         post_roll_seconds: float = 20.0,
+        *,
+        events: Optional[pd.DataFrame] = None,
+        metadata: Optional[Dict] = None,
+        media_duration_seconds: Optional[float] = None,
     ) -> bool:
         """Export a marker-only FCPXML project for Final Cut Pro."""
-        moments = self.build_editor_moments(kind, pre_roll_seconds, post_roll_seconds)
+        moments = self.build_editor_moments(
+            kind,
+            pre_roll_seconds,
+            post_roll_seconds,
+            events=events,
+            metadata=metadata,
+            media_duration_seconds=media_duration_seconds,
+        )
         _, _, actual_fps, frame_duration = self._rate_info(fps)
         duration_seconds = max(
             float(self.session_info.get("end_seconds", 0.0)),
@@ -911,11 +1193,18 @@ class ChatAnalyzer:
             )
 
         ET.indent(root, space="  ")
-        ET.ElementTree(root).write(output_path, encoding="utf-8", xml_declaration=True)
+        atomic_save(
+            output_path,
+            lambda temporary: ET.ElementTree(root).write(
+                temporary,
+                encoding="utf-8",
+                xml_declaration=True,
+            ),
+        )
         return True
     
     def get_all_text(self) -> str:
-        """Get normalized tokens for wordcloud without reaction-variant flooding."""
+        """Get whitespace-based expressions without reaction-variant flooding."""
         if self.df is None:
             return ""
 
@@ -923,13 +1212,17 @@ class ChatAnalyzer:
         for message in self.df.loc[self._analysis_mask(), "clean_message"]:
             text = str(message)
             text = re.sub(r"https?://\S+", " ", text, flags=re.IGNORECASE)
+            text = re.sub(r"(ㅋ{2,}|ㅠ{2,}|ㅜ{2,})", r" \1 ", text)
             text = re.sub(r"ㅋ{3,}", "ㅋㅋ", text)
             text = re.sub(r"ㅠ{3,}", "ㅠㅠ", text)
             text = re.sub(r"ㅜ{3,}", "ㅜㅜ", text)
             text = re.sub(r"[^0-9A-Za-z가-힣ㄱ-ㅎㅏ-ㅣ_]+", " ", text)
             for token in text.split():
                 normalized = token.casefold()
-                if len(normalized) < 2 or normalized.isdigit():
+                if (
+                    (len(normalized) < 2 and normalized not in {"와", "헐"})
+                    or normalized.isdigit()
+                ):
                     continue
                 tokens.append(normalized)
         return " ".join(tokens)

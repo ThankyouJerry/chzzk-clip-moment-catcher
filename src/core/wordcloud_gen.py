@@ -4,7 +4,10 @@ WordCloud Generator with Cross-Platform Font Support
 import platform
 from pathlib import Path
 from wordcloud import WordCloud
-from typing import Optional
+from typing import Callable, Optional
+
+from core.errors import TaskCancelled
+from core.file_io import atomic_save
 
 
 class WordCloudGenerator:
@@ -52,8 +55,14 @@ class WordCloudGenerator:
             # Fallback
             return None
     
-    def generate(self, text: str, width: int = 800, height: int = 400, 
-                 max_words: int = 100) -> bool:
+    def generate(
+        self,
+        text: str,
+        width: int = 800,
+        height: int = 400,
+        max_words: int = 100,
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ) -> bool:
         """
         Generate wordcloud from text
         
@@ -68,11 +77,13 @@ class WordCloudGenerator:
         """
         if not text.strip():
             return False
+        if cancel_check is not None and cancel_check():
+            raise TaskCancelled("작업이 취소되었습니다.")
         
         font_path = self.get_korean_font()
         
-        # Create wordcloud
-        self.wordcloud = WordCloud(
+        # Commit the image only after generation and cancellation checks succeed.
+        generated = WordCloud(
             font_path=font_path,
             width=width,
             height=height,
@@ -82,10 +93,12 @@ class WordCloudGenerator:
             relative_scaling=0.5,
             min_font_size=10
         ).generate(text)
-        
+        if cancel_check is not None and cancel_check():
+            raise TaskCancelled("작업이 취소되었습니다.")
+        self.wordcloud = generated
         return True
     
-    def save(self, output_path: str) -> bool:
+    def save(self, output_path: str, *, image=None) -> bool:
         """
         Save wordcloud to file
         
@@ -95,10 +108,17 @@ class WordCloudGenerator:
         Returns:
             True if successful
         """
-        if self.wordcloud is None:
+        if self.wordcloud is None and image is None:
             return False
-        
-        self.wordcloud.to_file(output_path)
+
+        if image is not None:
+            writer = lambda temporary: image.save(temporary, format="PNG")
+        else:
+            writer = lambda temporary: self.wordcloud.to_file(str(temporary))
+        atomic_save(
+            output_path,
+            writer,
+        )
         return True
     
     def get_wordcloud(self) -> Optional[WordCloud]:

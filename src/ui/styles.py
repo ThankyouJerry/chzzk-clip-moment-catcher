@@ -52,6 +52,10 @@ def get_stylesheet() -> str:
     QPushButton:pressed {{
         background-color: #3730a3;
     }}
+
+    QPushButton:focus {{
+        border: 2px solid {COLORS['warning']};
+    }}
     
     QPushButton:disabled {{
         background-color: {COLORS['surface_light']};
@@ -97,6 +101,10 @@ def get_stylesheet() -> str:
         color: {COLORS['text']};
         selection-background-color: {COLORS['primary']};
     }}
+
+    QComboBox:focus {{
+        border: 2px solid {COLORS['warning']};
+    }}
     
     /* Labels */
     QLabel {{
@@ -137,6 +145,10 @@ def get_stylesheet() -> str:
     QScrollArea {{
         border: none;
         background-color: {COLORS['surface']};
+    }}
+
+    QScrollArea#mainScrollArea {{
+        background-color: {COLORS['background']};
     }}
 
     QTabWidget::pane {{

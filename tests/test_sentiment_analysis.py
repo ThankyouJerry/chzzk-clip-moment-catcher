@@ -22,6 +22,23 @@ def test_negation_and_negative_compounds_override_positive_roots(message):
     assert signals["has_valence"] is True
 
 
+@pytest.mark.parametrize(
+    "message,expected_sign",
+    [
+        ("재미있지 않다", -1),
+        ("좋아하지 않는다", -1),
+        ("감사하지 않습니다", -1),
+        ("싫어하지 않아", 1),
+        ("싫지는 않다", 1),
+    ],
+)
+def test_postposed_korean_negation_blocks_and_reverses_the_root(message, expected_sign):
+    signals = SentimentAnalyzer().analyze_message_signals(message)
+
+    assert math.copysign(1, signals["valence"]) == expected_sign
+    assert signals["has_valence"] is True
+
+
 def test_repeated_laughter_is_one_strong_signal_not_overlapping_substrings():
     signals = SentimentAnalyzer().analyze_message_signals("ㅋㅋㅋㅋㅋ")
 
@@ -113,6 +130,33 @@ def test_blank_messages_are_excluded_from_sentiment_coverage_denominator():
     assert timeline.iloc[0]["coverage"] == 1.0
 
 
+def test_overall_valence_is_invariant_to_timeline_interval():
+    frame = pd.DataFrame([
+        {
+            "seconds": 1.0,
+            "clean_message": "대박",
+            "message_raw": "대박",
+            "custom_emote_count": 0,
+            "is_system": False,
+        },
+        {
+            "seconds": 61.0,
+            "clean_message": "아쉽",
+            "message_raw": "아쉽",
+            "custom_emote_count": 0,
+            "is_system": False,
+        },
+    ])
+    analyzer = SentimentAnalyzer()
+
+    analyzer.analyze_timeline(frame, interval_minutes=1)
+    one_minute = analyzer.get_summary()["valence"]
+    analyzer.analyze_timeline(frame, interval_minutes=2)
+    two_minutes = analyzer.get_summary()["valence"]
+
+    assert one_minute == pytest.approx(two_minutes)
+
+
 def test_system_only_timeline_keeps_empty_result_schema():
     frame = pd.DataFrame([
         {
@@ -159,6 +203,38 @@ def test_threshold_is_applied_when_detecting_mood_changes():
 
     assert analyzer.detect_mood_changes(threshold=0.4, min_change=0.2) == []
     assert len(analyzer.detect_mood_changes(threshold=0.3, min_change=0.2)) == 1
+
+
+def test_large_transition_into_quiet_state_is_not_suppressed():
+    analyzer = SentimentAnalyzer()
+    analyzer.sentiment_results = pd.DataFrame([
+        {
+            "time_seconds": 0,
+            "time_str": "00:00:00",
+            "valence": 0.8,
+            "sentiment_score": 0.8,
+            "arousal": 0.7,
+            "sentiment_message_count": 3,
+            "evidence_count": 3,
+            "coverage": 0.5,
+        },
+        {
+            "time_seconds": 60,
+            "time_str": "00:01:00",
+            "valence": 0.15,
+            "sentiment_score": 0.15,
+            "arousal": 0.1,
+            "sentiment_message_count": 3,
+            "evidence_count": 3,
+            "coverage": 0.5,
+        },
+    ])
+    analyzer.analysis_metadata = {"interval_seconds": 60}
+
+    changes = analyzer.detect_mood_changes(threshold=0.3, min_change=0.2)
+
+    assert len(changes) == 1
+    assert changes[0]["type"] == "calm"
 
 
 def test_mood_change_requires_enough_evidence_in_both_bins():

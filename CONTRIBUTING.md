@@ -4,20 +4,23 @@
 
 ## 개발 환경
 
-Python 3.12 환경을 권장합니다.
+Python 3.12 환경을 사용합니다. 시스템 Python에 직접 설치하지 말고 저장소 전용 가상환경을 만드세요.
 
 기여하려면 먼저 저장소를 자신의 GitHub 계정으로 fork한 뒤 fork의 URL로 clone합니다. 단순히 소스 실행만 확인하려면 아래 원본 URL을 사용할 수 있습니다.
 
 ```bash
 git clone https://github.com/ThankyouJerry/chzzk-clip-moment-catcher.git
 cd chzzk-clip-moment-catcher
-python3 -m pip install -r requirements-dev.txt
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install --only-binary=:all: -r requirements-dev.txt
 ```
 
-Windows에서는 `python3` 대신 `py` 또는 `python`을 사용하세요. 앱은 다음 명령으로 실행합니다.
+Windows에서는 `python3.12 -m venv .venv` 대신 `py -3.12 -m venv .venv`를 실행한 뒤 `.venv\Scripts\activate`로 활성화하세요. 앱은 다음 명령으로 실행합니다.
 
 ```bash
-python3 src/main.py
+python src/main.py
 ```
 
 ## 테스트
@@ -27,8 +30,9 @@ Qt 창을 표시하지 않고 전체 테스트를 실행합니다.
 macOS와 Linux:
 
 ```bash
-QT_QPA_PLATFORM=offscreen python3 -m compileall -q src tests
-QT_QPA_PLATFORM=offscreen python3 -m pytest
+QT_QPA_PLATFORM=offscreen python -m compileall -q src tests
+QT_QPA_PLATFORM=offscreen python -m pytest
+python -m pip check
 ```
 
 Windows PowerShell:
@@ -37,6 +41,7 @@ Windows PowerShell:
 $env:QT_QPA_PLATFORM = "offscreen"
 python -m compileall -q src tests
 python -m pytest
+python -m pip check
 ```
 
 새 동작이나 오류 수정에는 가능한 경우 회귀 테스트를 함께 추가해 주세요.

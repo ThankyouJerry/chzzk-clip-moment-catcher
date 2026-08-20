@@ -8,6 +8,7 @@ fi
 
 SOURCE_APP="$1"
 OUTPUT_ZIP="$2"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if [[ ! -d "$SOURCE_APP" ]]; then
   echo "App bundle not found: $SOURCE_APP" >&2
@@ -27,6 +28,7 @@ ditto --norsrc "$SOURCE_APP" "$STAGED_APP"
 xattr -cr "$STAGED_APP"
 codesign --force --deep --sign - "$STAGED_APP"
 codesign --verify --deep --strict "$STAGED_APP"
+"$SCRIPT_DIR/scripts/verify_macos_compatibility.sh" "$STAGED_APP" 12.0
 
 EXECUTABLE="$STAGED_APP/Contents/MacOS/ChzzkClipMomentCatcher"
 QT_QPA_PLATFORM=offscreen "$EXECUTABLE" >"$STAGE_DIR/smoke.log" 2>&1 &
@@ -42,5 +44,17 @@ kill "$APP_PID"
 wait "$APP_PID" 2>/dev/null || true
 
 mkdir -p "$(dirname "$OUTPUT_ZIP")"
-ditto -c -k --keepParent "$STAGED_APP" "$OUTPUT_ZIP"
+rm -f "$OUTPUT_ZIP"
+COPYFILE_DISABLE=1 ditto -c -k --norsrc --keepParent "$STAGED_APP" "$OUTPUT_ZIP"
+
+archive_listing="$(unzip -Z1 "$OUTPUT_ZIP")"
+if grep -Eq '(^|/)\._' <<< "$archive_listing"; then
+  echo "AppleDouble metadata found in archive: $OUTPUT_ZIP" >&2
+  exit 1
+fi
+
+EXTRACT_DIR="$STAGE_DIR/extracted"
+mkdir -p "$EXTRACT_DIR"
+ditto -x -k "$OUTPUT_ZIP" "$EXTRACT_DIR"
+codesign --verify --deep --strict "$EXTRACT_DIR/$(basename "$SOURCE_APP")"
 echo "Verified and archived: $OUTPUT_ZIP"
