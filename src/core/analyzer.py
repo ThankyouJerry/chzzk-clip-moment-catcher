@@ -188,7 +188,13 @@ class ChatAnalyzer:
             )
 
         combined["seconds"] = pd.Series(parsed_seconds, dtype="float64")
-        combined["message_raw"] = combined["메시지"].astype("string")
+        combined["메시지"] = (
+            combined["메시지"]
+            .astype("string")
+            .str.replace("\r\n", "\n", regex=False)
+            .str.replace("\r", "\n", regex=False)
+        )
+        combined["message_raw"] = combined["메시지"]
         combined["clean_message"] = combined["message_raw"].apply(self.clean_message)
         combined["custom_emote_count"] = combined["message_raw"].apply(
             lambda value: len(re.findall(r"\{:[^:]+:\}", str(value)))

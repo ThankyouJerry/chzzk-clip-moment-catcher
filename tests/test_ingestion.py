@@ -195,9 +195,10 @@ def test_nul_and_control_characters_are_rejected(tmp_path):
 
 def test_quoted_commas_and_multiline_messages_are_preserved(tmp_path):
     path = tmp_path / "quoted.csv"
-    path.write_text(
-        '재생시간,닉네임,메시지\n00:00:01,user,"첫 줄, 쉼표\n둘째 줄"\n',
-        encoding="utf-8-sig",
+    path.write_bytes(
+        '재생시간,닉네임,메시지\r\n00:00:01,user,"첫 줄, 쉼표\r\n둘째 줄"\r\n'.encode(
+            "utf-8-sig"
+        )
     )
 
     analyzer = ChatAnalyzer()
