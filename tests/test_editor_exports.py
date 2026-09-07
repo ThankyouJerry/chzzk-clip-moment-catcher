@@ -24,6 +24,9 @@ def event(peak: float, start: float = 0, end: float = 60):
         "unique_users": 12,
         "top_user_share": 0.2,
         "duplicate_share": 0.0,
+        "participant_identity_basis": "id",
+        "participant_dispersion": 0.8,
+        "reaction_scope": "다수 반응",
     }
 
 
@@ -81,6 +84,9 @@ def test_editor_csv_is_a_labeled_work_table(tmp_path):
     assert frame.loc[0, "추천 시작(초)"] == 15
     assert frame.loc[0, "핵심 시점(초)"] == 30
     assert frame.loc[0, "추천 종료(초)"] == 50
+    assert frame.loc[0, "참여자 식별 기준"] == "id"
+    assert frame.loc[0, "참여자 분산도"] == pytest.approx(0.8)
+    assert frame.loc[0, "반응 범위"] == "다수 반응"
 
 
 def test_editor_csv_preserves_milliseconds_in_time_and_numeric_columns(tmp_path):
@@ -108,7 +114,7 @@ def test_keyword_editor_csv_labels_occurrences_instead_of_messages(tmp_path):
     frame = pd.read_csv(path, encoding="utf-8-sig")
     assert frame.loc[0, "키워드 출현 횟수"] == 40
     assert frame.loc[0, "피크 15초 키워드 출현"] == 20
-    assert frame.loc[0, "ID 우선 참여자 수"] == 12
+    assert frame.loc[0, "고유 채팅 참여자 수"] == 12
 
 
 @pytest.mark.parametrize("keyword", ["=1+1", "+SUM(A1:A2)", "-2+3", "@cmd"])

@@ -55,6 +55,32 @@ def test_header_validation_streams_without_reading_the_entire_file(tmp_path, mon
     assert ChatAnalyzer().load_csv(path) == 1
 
 
+def test_load_builds_participant_key_from_id_before_nickname(tmp_path):
+    path = tmp_path / "participants.csv"
+    write_csv(
+        path,
+        [
+            {**valid_row(nickname="first"), "id": "0012"},
+            {**valid_row(time="00:00:01", nickname="renamed"), "id": "0012"},
+            {**valid_row(time="00:00:02", nickname="same"), "id": ""},
+            {**valid_row(time="00:00:03", nickname=" same "), "id": ""},
+            {**valid_row(time="00:00:04", nickname="same"), "id": "a"},
+            {**valid_row(time="00:00:05", nickname="same"), "id": "b"},
+        ],
+    )
+
+    analyzer = ChatAnalyzer()
+    analyzer.load_csv(path)
+
+    assert analyzer.df["id"].tolist()[:2] == ["0012", "0012"]
+    assert analyzer.df["participant_key"].tolist() == [
+        "id:0012", "id:0012", "nickname:same", "nickname:same", "id:a", "id:b"
+    ]
+    assert analyzer.df["participant_identity_basis"].tolist() == [
+        "id", "id", "nickname", "nickname", "id", "id"
+    ]
+
+
 def test_load_rejects_missing_schema_and_empty_data(tmp_path):
     missing = tmp_path / "missing.csv"
     write_csv(missing, [{"재생시간": "00:00:01", "메시지": "hello"}])
@@ -100,6 +126,23 @@ def test_split_csv_discovery_is_case_insensitive(tmp_path):
     assert analyzer.df["메시지"].tolist() == ["first", "second"]
 
 
+def test_split_csv_accepts_optional_id_missing_from_one_part(tmp_path):
+    first = tmp_path / "vod_d_p001.csv"
+    second = tmp_path / "vod_d_p002.csv"
+    write_csv(first, [valid_row(time="00:00:01", nickname="first", message="one")])
+    write_csv(
+        second,
+        [{"재생시간": "00:00:02", "닉네임": "second", "메시지": "two"}],
+    )
+
+    analyzer = ChatAnalyzer()
+    assert analyzer.load_csv(second) == 2
+    assert analyzer.df["participant_key"].tolist() == [
+        "id:000123",
+        "nickname:second",
+    ]
+
+
 def test_legacy_exporter_schema_and_iso_elapsed_time_are_supported(tmp_path):
     source = tmp_path / "legacy.csv"
     write_csv(
@@ -111,6 +154,8 @@ def test_legacy_exporter_schema_and_iso_elapsed_time_are_supported(tmp_path):
     assert analyzer.load_csv(str(source)) == 1
     assert analyzer.df.iloc[0]["seconds"] == pytest.approx(3723.5)
     assert analyzer.df.iloc[0]["닉네임"] == "user"
+    assert analyzer.df.iloc[0]["participant_key"] == "id:user"
+    assert analyzer.df.iloc[0]["participant_identity_basis"] == "id"
     assert analyzer.df.iloc[0]["메시지"] == "chat"
 
 

@@ -26,7 +26,6 @@ class ChatAnalyzer:
     REQUIRED_COLUMNS = ("재생시간", "닉네임", "메시지")
     LEGACY_COLUMN_ALIASES = {
         "Timestamp": "재생시간",
-        "User ID": "닉네임",
         "Message": "메시지",
     }
     SPLIT_FILE_PATTERNS = (
@@ -142,6 +141,13 @@ class ChatAnalyzer:
                     f"{', '.join(collisions)}"
                 )
             frame = self._normalize_exporter_columns(frame)
+            if "id" not in frame.columns:
+                frame["id"] = ""
+            preferred_columns = ["재생시간", "닉네임", "id", "메시지"]
+            frame = frame[
+                [column for column in preferred_columns if column in frame.columns]
+                + [column for column in frame.columns if column not in preferred_columns]
+            ]
             current_columns = list(frame.columns)
             if canonical_columns is None:
                 canonical_columns = current_columns
@@ -200,15 +206,13 @@ class ChatAnalyzer:
             lambda value: len(re.findall(r"\{:[^:]+:\}", str(value)))
         )
         combined["is_system"] = combined["닉네임"].str.strip().eq("[SYSTEM]")
-        identifier = (
-            combined["id"].astype("string").str.strip()
-            if "id" in combined.columns
-            else pd.Series("", index=combined.index, dtype="string")
-        )
-        nickname = combined["닉네임"].astype("string").str.strip().str.casefold()
-        combined["participant_key"] = (
-            "id:" + identifier.str.casefold()
-        ).where(identifier.ne(""), "nickname:" + nickname)
+        participant_data = combined.apply(self._participant_identity, axis=1)
+        combined["participant_key"] = participant_data.apply(
+            lambda item: item[0]
+        ).astype("string")
+        combined["participant_identity_basis"] = participant_data.apply(
+            lambda item: item[1]
+        ).astype("string")
 
         duplicate_columns = list(self.REQUIRED_COLUMNS)
         if "id" in combined.columns:
@@ -239,6 +243,13 @@ class ChatAnalyzer:
             "blank_messages": int(combined["message_raw"].str.strip().eq("").sum()),
             "blank_clean_messages": int(combined["clean_message"].str.strip().eq("").sum()),
             "custom_emote_rows": int(combined["custom_emote_count"].gt(0).sum()),
+            "id_participant_rows": int(combined["participant_identity_basis"].eq("id").sum()),
+            "nickname_fallback_rows": int(
+                combined["participant_identity_basis"].eq("nickname").sum()
+            ),
+            "unidentified_participant_rows": int(
+                combined["participant_identity_basis"].eq("unknown").sum()
+            ),
             "start_seconds": float(combined["seconds"].min()),
             "end_seconds": float(combined["seconds"].max()),
             "encodings": encodings,
@@ -285,12 +296,34 @@ class ChatAnalyzer:
 
     def _normalize_exporter_columns(self, frame: pd.DataFrame) -> pd.DataFrame:
         """Normalize current and legacy chzzk-chat-exporter column names."""
+        legacy_user_ids = frame["User ID"].copy() if "User ID" in frame.columns else None
         rename_map = {
             source: target
             for source, target in self.LEGACY_COLUMN_ALIASES.items()
             if source in frame.columns and target not in frame.columns
         }
-        return frame.rename(columns=rename_map)
+        frame = frame.rename(columns=rename_map)
+        if legacy_user_ids is not None:
+            if "닉네임" not in frame.columns:
+                frame["닉네임"] = legacy_user_ids
+            if "id" not in frame.columns:
+                frame["id"] = legacy_user_ids
+            frame = frame.drop(columns=["User ID"])
+        return frame
+
+    @staticmethod
+    def _participant_identity(row: pd.Series) -> tuple[object, str]:
+        """Return an opaque ID-first key, with a normalized nickname fallback."""
+        participant_id = str(row.get("id", "")).strip()
+        if participant_id:
+            return f"id:{participant_id}", "id"
+
+        nickname = unicodedata.normalize(
+            "NFC", str(row.get("닉네임", ""))
+        ).strip().casefold()
+        if nickname and nickname != "[system]":
+            return f"nickname:{nickname}", "nickname"
+        return pd.NA, "unknown"
 
     def _validate_csv_structure(
         self,
@@ -620,6 +653,8 @@ class ChatAnalyzer:
             "time_seconds", "time_str", "count", "peak_window_count",
             "baseline", "threshold", "lift", "score", "confidence",
             "unique_users", "top_user_share", "duplicate_share",
+            "participant_dispersion", "participant_identity_basis",
+            "reaction_scope",
         ]
         timeline["baseline"] = 0.0
         timeline["threshold"] = 0.0
@@ -732,21 +767,29 @@ class ChatAnalyzer:
             threshold = float(event_timeline["threshold"].mean())
             score = float(event_timeline["score"].max())
             lift = count / max(baseline * len(event_indices), 1.0)
-            identity_column = (
-                "participant_key" if "participant_key" in event_rows.columns else "닉네임"
-            )
-            unique_users = int(event_rows[identity_column].nunique()) if not event_rows.empty else 0
-            if event_rows.empty:
+            participant_rows = event_rows.loc[event_rows["participant_key"].notna()]
+            unique_users = int(participant_rows["participant_key"].nunique())
+            if participant_rows.empty:
                 top_user_share = 0.0
             else:
                 if peak_count_column is None:
-                    user_weights = event_rows[identity_column].value_counts()
+                    user_weights = participant_rows["participant_key"].value_counts()
                 else:
-                    user_weights = event_rows.groupby(identity_column, observed=False)[
-                        peak_count_column
-                    ].sum()
+                    user_weights = participant_rows.groupby(
+                        "participant_key", observed=False
+                    )[peak_count_column].sum()
                 top_user_share = float(user_weights.max() / max(user_weights.sum(), 1))
-            duplicate_columns = ["seconds", identity_column, "message_raw"]
+            identity_bases = set(
+                participant_rows["participant_identity_basis"].dropna()
+            )
+            if not identity_bases:
+                participant_identity_basis = "unknown"
+            elif len(identity_bases) == 1:
+                participant_identity_basis = next(iter(identity_bases))
+            else:
+                participant_identity_basis = "mixed"
+
+            duplicate_columns = ["seconds", "participant_key", "message_raw"]
             duplicate_columns = [
                 column for column in duplicate_columns if column in event_rows.columns
             ]
@@ -756,12 +799,24 @@ class ChatAnalyzer:
                 else 0.0
             )
             diversity_factor = min(1.0, unique_users / 5.0) * (1.0 - top_user_share)
-            confidence = (1.0 - min(0.75, duplicate_share)) * min(
+            raw_confidence = (1.0 - min(0.75, duplicate_share)) * min(
                 1.0,
                 max(0.0, 0.45 * min(score / 5.0, 1.0)
                     + 0.35 * min(lift / 3.0, 1.0)
                     + 0.20 * diversity_factor),
             )
+            if unique_users == 0:
+                reaction_scope = "식별 불가"
+                confidence = min(raw_confidence, 0.50)
+            elif unique_users == 1:
+                reaction_scope = "개인 집중"
+                confidence = min(raw_confidence, 0.35)
+            elif top_user_share >= 0.70:
+                reaction_scope = "소수 독점"
+                confidence = min(raw_confidence, 0.55)
+            else:
+                reaction_scope = "다수 반응"
+                confidence = raw_confidence
             timeline.loc[event_indices, "event_id"] = event_number
             events.append({
                 "event_id": event_number,
@@ -780,6 +835,9 @@ class ChatAnalyzer:
                 "unique_users": unique_users,
                 "top_user_share": round(top_user_share, 3),
                 "duplicate_share": round(duplicate_share, 3),
+                "participant_dispersion": round(diversity_factor, 3),
+                "participant_identity_basis": participant_identity_basis,
+                "reaction_scope": reaction_scope,
             })
 
         return pd.DataFrame(events, columns=event_columns), "ok"
@@ -952,6 +1010,11 @@ class ChatAnalyzer:
                 "unique_users": int(event["unique_users"]),
                 "top_user_share": float(event["top_user_share"]),
                 "duplicate_share": float(event.get("duplicate_share", 0.0)),
+                "participant_dispersion": float(event.get("participant_dispersion", 0.0)),
+                "participant_identity_basis": str(
+                    event.get("participant_identity_basis", "unknown")
+                ),
+                "reaction_scope": str(event.get("reaction_scope", "식별 불가")),
             })
         return moments
 
@@ -994,9 +1057,12 @@ class ChatAnalyzer:
             "peak_window_count": peak_count_label,
             "lift": "기준 대비 배수",
             "confidence": "신뢰도",
-            "unique_users": "ID 우선 참여자 수",
-            "top_user_share": "최다 참여자 비율",
+            "unique_users": "고유 채팅 참여자 수",
+            "top_user_share": "최다 참여자 점유율",
             "duplicate_share": "동일 행 비율",
+            "participant_dispersion": "참여자 분산도",
+            "participant_identity_basis": "참여자 식별 기준",
+            "reaction_scope": "반응 범위",
         }
         frame = pd.DataFrame(moments)
         if frame.empty:
@@ -1091,7 +1157,7 @@ class ChatAnalyzer:
             ET.SubElement(marker, "name").text = moment["label"]
             ET.SubElement(marker, "comment").text = (
                 f"추천 {moment['clip_start_time']} - {moment['clip_end_time']} / "
-                f"신뢰도 {moment['confidence']:.2f}"
+                f"신뢰도 {moment['confidence']:.2f} / {moment['reaction_scope']}"
             )
             ET.SubElement(marker, "in").text = str(marker_frame)
             ET.SubElement(marker, "out").text = str(marker_frame + 1)
@@ -1194,7 +1260,7 @@ class ChatAnalyzer:
                 value=moment["label"],
                 note=(
                     f"추천 {moment['clip_start_time']} - {moment['clip_end_time']} / "
-                    f"신뢰도 {moment['confidence']:.2f}"
+                    f"신뢰도 {moment['confidence']:.2f} / {moment['reaction_scope']}"
                 ),
             )
 

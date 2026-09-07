@@ -554,9 +554,11 @@ class MainWindow(QMainWindow):
             ("peak_seconds", "실제 피크"), ("end_seconds", "사건 종료"),
             ("count", count_label), ("peak_window_count", peak_label),
             ("lift", "기준 대비"), ("confidence", "신뢰도"),
-            ("unique_users", "ID 우선 참여자 수"),
-            ("top_user_share", "최다 참여자 비율"),
+            ("unique_users", "고유 참여자"),
+            ("top_user_share", "최다 참여자 점유율"),
             ("duplicate_share", "동일 행 비율"),
+            ("participant_dispersion", "참여자 분산도"),
+            ("reaction_scope", "반응 범위"),
         ]
         metadata = {
             "kind": kind,
@@ -995,6 +997,7 @@ class MainWindow(QMainWindow):
                     "coverage",
                     "top_user_share",
                     "duplicate_share",
+                    "participant_dispersion",
                 } and value != "":
                     value = f"{float(value):.0%}"
                 elif isinstance(value, float):

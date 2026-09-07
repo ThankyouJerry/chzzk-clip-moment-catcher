@@ -14,12 +14,12 @@ def load_rows(tmp_path: Path, rows) -> ChatAnalyzer:
     return analyzer
 
 
-def row(seconds: float, nickname: str = "user", message: str = "chat"):
+def row(seconds: float, nickname: str = "user", message: str = "chat", id: str = ""):
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
     secs = seconds % 60
     time_text = f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
-    return {"재생시간": time_text, "닉네임": nickname, "메시지": message}
+    return {"재생시간": time_text, "닉네임": nickname, "id": id, "메시지": message}
 
 
 @pytest.mark.parametrize("interval", [0, -1, float("nan"), float("inf")])
@@ -160,7 +160,67 @@ def test_sustained_surge_does_not_contaminate_its_own_baseline(tmp_path):
     assert result["events"][0]["end_seconds"] == 300
 
 
-def test_separate_event_end_at_source_boundary_excludes_the_next_bin_row(tmp_path):
+def test_event_retains_legacy_fields_and_reports_broad_participant_scope(tmp_path):
+    counts = [10, 10, 30, 10, 30, 10, 10]
+    rows = [
+        row(bin_index * 60 + index, f"u{index % 10}", id=str(index % 10))
+        for bin_index, count in enumerate(counts)
+        for index in range(count)
+    ]
+    event = load_rows(tmp_path, rows).analyze_chat_density(1, sensitivity=2)["events"][0]
+
+    assert event["unique_users"] == 10
+    assert event["top_user_share"] == pytest.approx(0.1)
+    assert event["participant_identity_basis"] == "id"
+    assert event["participant_dispersion"] == pytest.approx(0.9)
+    assert event["reaction_scope"] == "다수 반응"
+
+
+@pytest.mark.parametrize(
+    ("ids", "nicknames", "scope", "cap"),
+    [
+        (["a"] * 30, ["one"] * 30, "개인 집중", 0.35),
+        (["a"] * 24 + ["b"] * 6, ["one"] * 24 + ["two"] * 6, "소수 독점", 0.55),
+        (["a"] * 21 + ["b"] * 9, ["one"] * 21 + ["two"] * 9, "소수 독점", 0.55),
+    ],
+)
+def test_event_scope_caps_confidence_for_personal_or_concentrated_response(
+    tmp_path, ids, nicknames, scope, cap
+):
+    rows = []
+    for bin_index, count in enumerate([10, 10, 30, 10, 10]):
+        for index in range(count):
+            participant_index = index % len(ids) if bin_index == 2 else 0
+            rows.append(
+                row(
+                    bin_index * 60 + index,
+                    nicknames[participant_index],
+                    id=ids[participant_index],
+                )
+            )
+
+    event = load_rows(tmp_path, rows).analyze_chat_density(1, sensitivity=2)["events"][0]
+
+    assert event["reaction_scope"] == scope
+    assert event["confidence"] <= cap
+
+
+def test_unidentified_participants_do_not_create_group_reaction(tmp_path):
+    rows = [
+        row(bin_index * 60 + index, nickname="", id="")
+        for bin_index, count in enumerate([10, 10, 30, 10, 10])
+        for index in range(count)
+    ]
+
+    event = load_rows(tmp_path, rows).analyze_chat_density(1, sensitivity=2)["events"][0]
+
+    assert event["unique_users"] == 0
+    assert event["participant_identity_basis"] == "unknown"
+    assert event["reaction_scope"] == "식별 불가"
+    assert event["confidence"] <= 0.50
+
+
+def test_event_end_at_source_boundary_excludes_the_next_bin_row(tmp_path):
     counts = [10, 10, 30, 10, 30]
     rows = []
     for bin_index, count in enumerate(counts):
