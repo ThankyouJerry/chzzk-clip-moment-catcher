@@ -31,6 +31,11 @@ codesign --verify --deep --strict "$STAGED_APP"
 "$SCRIPT_DIR/scripts/verify_macos_compatibility.sh" "$STAGED_APP" 12.0
 
 EXECUTABLE="$STAGED_APP/Contents/MacOS/ChzzkClipMomentCatcher"
+if ! QT_QPA_PLATFORM=offscreen "$EXECUTABLE" --smoke-test >"$STAGE_DIR/functional-smoke.log" 2>&1; then
+  cat "$STAGE_DIR/functional-smoke.log" >&2
+  echo "Packaged app failed the functional smoke test." >&2
+  exit 1
+fi
 QT_QPA_PLATFORM=offscreen "$EXECUTABLE" >"$STAGE_DIR/smoke.log" 2>&1 &
 APP_PID=$!
 sleep 5

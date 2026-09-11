@@ -2,8 +2,16 @@
 setlocal
 cd /d "%~dp0"
 
-if not defined PYTHON_BIN set "PYTHON_BIN=python"
+if not defined PYTHON_BIN (
+  where py >nul 2>nul
+  if errorlevel 1 (
+    set "PYTHON_BIN=python"
+  ) else (
+    set "PYTHON_BIN=py -3.12"
+  )
+)
 if not defined VENV_DIR set "VENV_DIR=.build-venv"
+%PYTHON_BIN% -c "import sys; sys.exit(0 if sys.version_info[:2] == (3, 12) else 'Python 3.12 is required. Set PYTHON_BIN to a Python 3.12 executable.')" || exit /b 1
 %PYTHON_BIN% -m venv --clear "%VENV_DIR%" || exit /b 1
 "%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade pip || exit /b 1
 "%VENV_DIR%\Scripts\python.exe" -m pip install --only-binary=:all: -r requirements-dev.txt || exit /b 1

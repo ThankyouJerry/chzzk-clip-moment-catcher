@@ -7,7 +7,7 @@ import pandas as pd
 from matplotlib.figure import Figure
 from PIL import Image
 from PyQt6.QtTest import QSignalSpy
-from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QMessageBox
+from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QMessageBox, QWidget
 
 from core.errors import TaskCancelled
 from ui.main_window import MainWindow, TaskWorker
@@ -222,6 +222,27 @@ def test_export_uses_the_selected_result_tab_snapshot(window, tmp_path, monkeypa
 
     frame = pd.read_csv(output, encoding="utf-8-sig")
     assert frame.loc[0, "핵심 시점(초)"] == 30
+
+
+def test_editor_export_is_blocked_on_a_non_editor_result_tab(window, monkeypatch):
+    tab = QWidget()
+    window.result_tabs.addTab(tab, "분위기")
+    window.result_tabs.setCurrentWidget(tab)
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *args, **kwargs: warnings.append(args[2]),
+    )
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: pytest.fail("save dialog must not open"),
+    )
+
+    window.export_editor_result()
+
+    assert warnings and "편집 결과를 내보낼 수 없습니다" in warnings[0]
 
 
 def test_mood_export_uses_the_selected_result_tab_snapshot(window, tmp_path, monkeypatch):

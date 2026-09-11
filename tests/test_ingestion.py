@@ -81,6 +81,30 @@ def test_load_builds_participant_key_from_id_before_nickname(tmp_path):
     ]
 
 
+def test_missing_id_is_inferred_only_for_an_unambiguous_known_nickname(tmp_path):
+    path = tmp_path / "inferred-participants.csv"
+    write_csv(
+        path,
+        [
+            {**valid_row(nickname="same"), "id": "known"},
+            {**valid_row(time="00:00:01", nickname=" same "), "id": ""},
+            {**valid_row(time="00:00:02", nickname="shared"), "id": "first"},
+            {**valid_row(time="00:00:03", nickname="shared"), "id": "second"},
+            {**valid_row(time="00:00:04", nickname="shared"), "id": ""},
+        ],
+    )
+
+    analyzer = ChatAnalyzer()
+    analyzer.load_csv(path)
+
+    assert analyzer.df["participant_key"].tolist() == [
+        "id:known", "id:known", "id:first", "id:second", "nickname:shared"
+    ]
+    assert analyzer.df["participant_identity_basis"].tolist() == [
+        "id", "inferred_id", "id", "id", "nickname"
+    ]
+
+
 def test_load_rejects_missing_schema_and_empty_data(tmp_path):
     missing = tmp_path / "missing.csv"
     write_csv(missing, [{"재생시간": "00:00:01", "메시지": "hello"}])

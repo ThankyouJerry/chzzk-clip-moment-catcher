@@ -24,6 +24,7 @@ def event(peak: float, start: float = 0, end: float = 60):
         "unique_users": 12,
         "top_user_share": 0.2,
         "duplicate_share": 0.0,
+        "participant_coverage": 1.0,
         "participant_identity_basis": "id",
         "participant_dispersion": 0.8,
         "reaction_scope": "다수 반응",
@@ -85,6 +86,7 @@ def test_editor_csv_is_a_labeled_work_table(tmp_path):
     assert frame.loc[0, "핵심 시점(초)"] == 30
     assert frame.loc[0, "추천 종료(초)"] == 50
     assert frame.loc[0, "참여자 식별 기준"] == "id"
+    assert frame.loc[0, "참여자 식별률"] == pytest.approx(1.0)
     assert frame.loc[0, "참여자 분산도"] == pytest.approx(0.8)
     assert frame.loc[0, "반응 범위"] == "다수 반응"
 
@@ -163,6 +165,25 @@ def test_fcpxml_contains_marker_on_gap_at_actual_peak(tmp_path):
     assert marker.attrib["start"] == "150/30s"
     assert marker.attrib["duration"] == "1/30s"
     assert marker.attrib["value"] == "채팅 급증 #1"
+
+
+def test_marker_sequence_extends_one_frame_past_a_peak_at_the_source_end(tmp_path):
+    analyzer = analyzer_with_density_events(event(5, 0, 5))
+    analyzer.session_info["end_seconds"] = 5.0
+    premiere_path = tmp_path / "end-marker.xml"
+    final_cut_path = tmp_path / "end-marker.fcpxml"
+
+    analyzer.export_premiere_xml(
+        premiere_path, "density", fps=30, pre_roll_seconds=0, post_roll_seconds=0
+    )
+    analyzer.export_fcpxml(
+        final_cut_path, "density", fps=30, pre_roll_seconds=0, post_roll_seconds=0
+    )
+
+    premiere = ET.parse(premiere_path).getroot()
+    final_cut = ET.parse(final_cut_path).getroot()
+    assert premiere.findtext("./sequence/duration") == "151"
+    assert final_cut.find("./library/event/project/sequence").attrib["duration"] == "151/30s"
 
 
 def test_ntsc_rate_uses_exact_rational_time(tmp_path):

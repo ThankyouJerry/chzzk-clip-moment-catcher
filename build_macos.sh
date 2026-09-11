@@ -2,8 +2,15 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+  if command -v python3.12 >/dev/null 2>&1; then
+    PYTHON_BIN="python3.12"
+  else
+    PYTHON_BIN="python3"
+  fi
+fi
 VENV_DIR="${VENV_DIR:-.build-venv}"
+"$PYTHON_BIN" -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 12) else "Python 3.12 is required. Set PYTHON_BIN to a Python 3.12 executable.")'
 "$PYTHON_BIN" -m venv --clear "$VENV_DIR"
 "$VENV_DIR/bin/python" -m pip install --upgrade pip
 "$VENV_DIR/bin/python" -m pip install --only-binary=:all: -r requirements-dev.txt

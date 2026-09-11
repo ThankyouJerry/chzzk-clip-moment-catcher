@@ -22,7 +22,7 @@ def row(seconds: float, nickname: str = "user", message: str = "chat", id: str =
     return {"재생시간": time_text, "닉네임": nickname, "id": id, "메시지": message}
 
 
-@pytest.mark.parametrize("interval", [0, -1, float("nan"), float("inf")])
+@pytest.mark.parametrize("interval", [0, -1, float("nan"), float("inf"), 1e308])
 def test_interval_must_be_positive_and_finite(tmp_path, interval):
     analyzer = load_rows(tmp_path, [row(1)])
 
@@ -171,6 +171,7 @@ def test_event_retains_legacy_fields_and_reports_broad_participant_scope(tmp_pat
 
     assert event["unique_users"] == 10
     assert event["top_user_share"] == pytest.approx(0.1)
+    assert event["participant_coverage"] == pytest.approx(1.0)
     assert event["participant_identity_basis"] == "id"
     assert event["participant_dispersion"] == pytest.approx(0.9)
     assert event["reaction_scope"] == "다수 반응"
@@ -215,9 +216,79 @@ def test_unidentified_participants_do_not_create_group_reaction(tmp_path):
     event = load_rows(tmp_path, rows).analyze_chat_density(1, sensitivity=2)["events"][0]
 
     assert event["unique_users"] == 0
+    assert event["participant_coverage"] == 0
     assert event["participant_identity_basis"] == "unknown"
     assert event["reaction_scope"] == "식별 불가"
     assert event["confidence"] <= 0.50
+
+
+def test_low_identity_coverage_cannot_be_reported_as_a_group_reaction(tmp_path):
+    rows = []
+    for bin_index, count in enumerate([10, 10, 30, 10, 10]):
+        for index in range(count):
+            nickname = f"u{index}" if bin_index == 2 and index < 5 else ""
+            participant_id = f"id-{index}" if nickname else ""
+            rows.append(row(bin_index * 60 + index, nickname, id=participant_id))
+
+    event = load_rows(tmp_path, rows).analyze_chat_density(1, sensitivity=2)["events"][0]
+
+    assert event["participant_coverage"] == pytest.approx(5 / 30, abs=0.001)
+    assert event["reaction_scope"] == "식별 부족"
+    assert event["confidence"] <= 0.50
+
+
+def test_low_identity_coverage_keeps_stricter_single_participant_cap(tmp_path):
+    rows = []
+    for bin_index, count in enumerate([10, 10, 30, 10, 10]):
+        for index in range(count):
+            identified = bin_index == 2 and index < 5
+            rows.append(
+                row(
+                    bin_index * 60 + index,
+                    "same" if identified else "",
+                    id="same-id" if identified else "",
+                )
+            )
+
+    event = load_rows(tmp_path, rows).analyze_chat_density(1, sensitivity=2)["events"][0]
+
+    assert event["unique_users"] == 1
+    assert event["participant_coverage"] == pytest.approx(5 / 30, abs=0.001)
+    assert event["reaction_scope"] == "식별 부족"
+    assert event["confidence"] <= 0.35
+
+
+def test_intermittent_missing_id_does_not_split_one_known_participant(tmp_path):
+    rows = []
+    for bin_index, count in enumerate([10, 10, 30, 10, 10]):
+        for index in range(count):
+            participant_id = "same-id" if bin_index == 2 and index < 15 else ""
+            rows.append(row(bin_index * 60 + index, "same", id=participant_id))
+
+    event = load_rows(tmp_path, rows).analyze_chat_density(1, sensitivity=2)["events"][0]
+
+    assert event["unique_users"] == 1
+    assert event["participant_identity_basis"] == "id+inferred"
+    assert event["reaction_scope"] == "개인 집중"
+    assert event["confidence"] <= 0.35
+
+
+def test_duplicate_penalty_still_reduces_capped_personal_confidence(tmp_path):
+    def analyze(duplicate: bool):
+        rows = []
+        for bin_index, count in enumerate([10, 10, 30, 10, 10]):
+            for index in range(count):
+                seconds = bin_index * 60 + (0 if duplicate and bin_index == 2 else index)
+                message = "same" if duplicate and bin_index == 2 else f"chat-{index}"
+                rows.append(row(seconds, "same", message, id="same-id"))
+        return load_rows(tmp_path, rows).analyze_chat_density(1, sensitivity=2)["events"][0]
+
+    unique_event = analyze(False)
+    duplicate_event = analyze(True)
+
+    assert unique_event["confidence"] == pytest.approx(0.35)
+    assert duplicate_event["duplicate_share"] > 0.90
+    assert duplicate_event["confidence"] < unique_event["confidence"]
 
 
 def test_event_end_at_source_boundary_excludes_the_next_bin_row(tmp_path):
@@ -325,6 +396,19 @@ def test_keyword_reports_message_and_occurrence_counts_separately(tmp_path):
     assert result["occurrence_count"] == 3
     assert [item["count"] for item in result["timeline"]] == [2, 1, 0]
     assert analyzer.density_results is None
+
+
+def test_keyword_query_normalizes_canonically_equivalent_hangul(tmp_path):
+    analyzer = load_rows(
+        tmp_path,
+        [row(1, message="가 가 가"), row(61, message="other"), row(121, message="other")],
+    )
+
+    composed = analyzer.analyze_keyword("가", 1)
+    decomposed = analyzer.analyze_keyword("가", 1)
+
+    assert composed["occurrence_count"] == 3
+    assert decomposed["occurrence_count"] == composed["occurrence_count"]
 
 
 def test_keyword_dominance_uses_occurrences_and_stable_ids(tmp_path):

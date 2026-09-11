@@ -9,6 +9,11 @@ if (-not (Test-Path $Executable)) {
 }
 
 $env:QT_QPA_PLATFORM = "offscreen"
+$functional = Start-Process -FilePath $Executable -ArgumentList "--smoke-test" -PassThru -Wait
+if ($functional.ExitCode -ne 0) {
+    throw "Packaged functional smoke test failed with code $($functional.ExitCode)."
+}
+
 $process = Start-Process -FilePath $Executable -PassThru
 
 try {
@@ -25,4 +30,4 @@ finally {
     }
 }
 
-Write-Host "Packaged app passed the smoke test."
+Write-Host "Packaged app passed functional and launch smoke tests."

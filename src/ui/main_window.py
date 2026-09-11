@@ -557,6 +557,7 @@ class MainWindow(QMainWindow):
             ("unique_users", "고유 참여자"),
             ("top_user_share", "최다 참여자 점유율"),
             ("duplicate_share", "동일 행 비율"),
+            ("participant_coverage", "참여자 식별률"),
             ("participant_dispersion", "참여자 분산도"),
             ("reaction_scope", "반응 범위"),
         ]
@@ -849,12 +850,18 @@ class MainWindow(QMainWindow):
         kind = str(self.export_kind.currentData())
         export_format = str(self.export_format.currentData())
         snapshot = self._selected_editor_snapshot(kind)
-        snapshot_kwargs = {}
-        if snapshot is not None:
-            snapshot_kwargs = {
-                "events": snapshot["events"],
-                "metadata": snapshot["metadata"],
-            }
+        if snapshot is None:
+            QMessageBox.warning(
+                self,
+                "내보내기 확인",
+                "선택한 결과 탭과 같은 분석 유형을 선택하세요. "
+                "분위기와 표현 분포 탭에서는 편집 결과를 내보낼 수 없습니다.",
+            )
+            return
+        snapshot_kwargs = {
+            "events": snapshot["events"],
+            "metadata": snapshot["metadata"],
+        }
         try:
             pre_roll = self._read_nonnegative(self.pre_roll_input, "프리롤")
             post_roll = self._read_nonnegative(self.post_roll_input, "포스트롤")
@@ -997,6 +1004,7 @@ class MainWindow(QMainWindow):
                     "coverage",
                     "top_user_share",
                     "duplicate_share",
+                    "participant_coverage",
                     "participant_dispersion",
                 } and value != "":
                     value = f"{float(value):.0%}"

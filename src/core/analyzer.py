@@ -206,13 +206,43 @@ class ChatAnalyzer:
             lambda value: len(re.findall(r"\{:[^:]+:\}", str(value)))
         )
         combined["is_system"] = combined["닉네임"].str.strip().eq("[SYSTEM]")
-        participant_data = combined.apply(self._participant_identity, axis=1)
-        combined["participant_key"] = participant_data.apply(
-            lambda item: item[0]
+        participant_ids = combined["id"].map(self._normalize_participant_id).astype("string")
+        participant_nicknames = combined["닉네임"].map(
+            self._normalize_participant_nickname
         ).astype("string")
-        combined["participant_identity_basis"] = participant_data.apply(
-            lambda item: item[1]
-        ).astype("string")
+        usable_rows = ~combined["is_system"]
+        id_rows = usable_rows & participant_ids.ne("")
+        nickname_rows = usable_rows & ~id_rows & participant_nicknames.ne("")
+
+        combined["participant_key"] = pd.Series(pd.NA, index=combined.index, dtype="string")
+        combined.loc[id_rows, "participant_key"] = "id:" + participant_ids.loc[id_rows]
+        combined.loc[nickname_rows, "participant_key"] = (
+            "nickname:" + participant_nicknames.loc[nickname_rows]
+        )
+        combined["participant_identity_basis"] = pd.Series(
+            "unknown", index=combined.index, dtype="string"
+        )
+        combined.loc[id_rows, "participant_identity_basis"] = "id"
+        combined.loc[nickname_rows, "participant_identity_basis"] = "nickname"
+
+        known_pairs = pd.DataFrame({
+            "nickname": participant_nicknames.loc[id_rows],
+            "id": participant_ids.loc[id_rows],
+        })
+        if not known_pairs.empty:
+            unambiguous_names = known_pairs.groupby("nickname")["id"].nunique()
+            unambiguous_names = unambiguous_names[unambiguous_names.eq(1)].index
+            id_by_nickname = (
+                known_pairs.loc[known_pairs["nickname"].isin(unambiguous_names)]
+                .drop_duplicates("nickname")
+                .set_index("nickname")["id"]
+            )
+            inferred_ids = participant_nicknames.map(id_by_nickname).astype("string")
+            inferred_rows = nickname_rows & inferred_ids.notna()
+            combined.loc[inferred_rows, "participant_key"] = (
+                "id:" + inferred_ids.loc[inferred_rows]
+            )
+            combined.loc[inferred_rows, "participant_identity_basis"] = "inferred_id"
 
         duplicate_columns = list(self.REQUIRED_COLUMNS)
         if "id" in combined.columns:
@@ -244,6 +274,9 @@ class ChatAnalyzer:
             "blank_clean_messages": int(combined["clean_message"].str.strip().eq("").sum()),
             "custom_emote_rows": int(combined["custom_emote_count"].gt(0).sum()),
             "id_participant_rows": int(combined["participant_identity_basis"].eq("id").sum()),
+            "inferred_id_participant_rows": int(
+                combined["participant_identity_basis"].eq("inferred_id").sum()
+            ),
             "nickname_fallback_rows": int(
                 combined["participant_identity_basis"].eq("nickname").sum()
             ),
@@ -312,18 +345,18 @@ class ChatAnalyzer:
         return frame
 
     @staticmethod
-    def _participant_identity(row: pd.Series) -> tuple[object, str]:
-        """Return an opaque ID-first key, with a normalized nickname fallback."""
-        participant_id = str(row.get("id", "")).strip()
-        if participant_id:
-            return f"id:{participant_id}", "id"
+    def _normalize_participant_id(value: object) -> str:
+        if pd.isna(value):
+            return ""
+        return str(value).strip()
 
-        nickname = unicodedata.normalize(
-            "NFC", str(row.get("닉네임", ""))
-        ).strip().casefold()
-        if nickname and nickname != "[system]":
-            return f"nickname:{nickname}", "nickname"
-        return pd.NA, "unknown"
+    @staticmethod
+    def _normalize_participant_nickname(value: object) -> str:
+        if pd.isna(value):
+            return ""
+        nickname = unicodedata.normalize("NFC", str(value))
+        nickname = re.sub(r"[\u200b-\u200d\ufeff]", "", nickname)
+        return re.sub(r"\s+", " ", nickname).strip().casefold()
 
     def _validate_csv_structure(
         self,
@@ -483,7 +516,7 @@ class ChatAnalyzer:
         interval_seconds, sensitivity = self._validate_analysis_params(
             interval_minutes, sensitivity
         )
-        keyword = str(keyword).strip()
+        keyword = self.clean_message(keyword)
         if not keyword:
             raise ValueError("검색 키워드를 입력하세요.")
         self._cancel_if_requested(cancel_check)
@@ -604,7 +637,10 @@ class ChatAnalyzer:
             raise ValueError("분석 간격은 0보다 큰 유한한 값이어야 합니다.")
         if not math.isfinite(sensitivity) or not 1.0 <= sensitivity <= 3.0:
             raise ValueError("민감도는 1.0부터 3.0 사이여야 합니다.")
-        interval_seconds = max(1, int(round(interval_minutes * 60)))
+        interval_seconds_value = interval_minutes * 60
+        if not math.isfinite(interval_seconds_value):
+            raise ValueError("분석 간격은 0보다 큰 유한한 값이어야 합니다.")
+        interval_seconds = max(1, int(round(interval_seconds_value)))
         return interval_seconds, sensitivity
 
     def _build_count_timeline(
@@ -653,7 +689,7 @@ class ChatAnalyzer:
             "time_seconds", "time_str", "count", "peak_window_count",
             "baseline", "threshold", "lift", "score", "confidence",
             "unique_users", "top_user_share", "duplicate_share",
-            "participant_dispersion", "participant_identity_basis",
+            "participant_coverage", "participant_dispersion", "participant_identity_basis",
             "reaction_scope",
         ]
         timeline["baseline"] = 0.0
@@ -769,6 +805,13 @@ class ChatAnalyzer:
             lift = count / max(baseline * len(event_indices), 1.0)
             participant_rows = event_rows.loc[event_rows["participant_key"].notna()]
             unique_users = int(participant_rows["participant_key"].nunique())
+            if peak_count_column is None:
+                event_weight = len(event_rows)
+                participant_weight = len(participant_rows)
+            else:
+                event_weight = int(event_rows[peak_count_column].sum())
+                participant_weight = int(participant_rows[peak_count_column].sum())
+            participant_coverage = participant_weight / max(event_weight, 1)
             if participant_rows.empty:
                 top_user_share = 0.0
             else:
@@ -784,6 +827,10 @@ class ChatAnalyzer:
             )
             if not identity_bases:
                 participant_identity_basis = "unknown"
+            elif identity_bases == {"id"}:
+                participant_identity_basis = "id"
+            elif identity_bases <= {"id", "inferred_id"}:
+                participant_identity_basis = "id+inferred"
             elif len(identity_bases) == 1:
                 participant_identity_basis = next(iter(identity_bases))
             else:
@@ -799,24 +846,32 @@ class ChatAnalyzer:
                 else 0.0
             )
             diversity_factor = min(1.0, unique_users / 5.0) * (1.0 - top_user_share)
-            raw_confidence = (1.0 - min(0.75, duplicate_share)) * min(
+            base_confidence = min(
                 1.0,
                 max(0.0, 0.45 * min(score / 5.0, 1.0)
                     + 0.35 * min(lift / 3.0, 1.0)
-                    + 0.20 * diversity_factor),
+                    + 0.20 * diversity_factor * participant_coverage),
             )
             if unique_users == 0:
                 reaction_scope = "식별 불가"
-                confidence = min(raw_confidence, 0.50)
+            elif participant_coverage < 0.50:
+                reaction_scope = "식별 부족"
             elif unique_users == 1:
                 reaction_scope = "개인 집중"
-                confidence = min(raw_confidence, 0.35)
             elif top_user_share >= 0.70:
                 reaction_scope = "소수 독점"
-                confidence = min(raw_confidence, 0.55)
             else:
                 reaction_scope = "다수 반응"
-                confidence = raw_confidence
+
+            confidence_cap = 1.0
+            if unique_users == 0 or participant_coverage < 0.50:
+                confidence_cap = min(confidence_cap, 0.50)
+            if unique_users == 1:
+                confidence_cap = min(confidence_cap, 0.35)
+            elif top_user_share >= 0.70:
+                confidence_cap = min(confidence_cap, 0.55)
+            capped_confidence = min(base_confidence, confidence_cap)
+            confidence = (1.0 - min(0.75, duplicate_share)) * capped_confidence
             timeline.loc[event_indices, "event_id"] = event_number
             events.append({
                 "event_id": event_number,
@@ -835,6 +890,7 @@ class ChatAnalyzer:
                 "unique_users": unique_users,
                 "top_user_share": round(top_user_share, 3),
                 "duplicate_share": round(duplicate_share, 3),
+                "participant_coverage": round(participant_coverage, 3),
                 "participant_dispersion": round(diversity_factor, 3),
                 "participant_identity_basis": participant_identity_basis,
                 "reaction_scope": reaction_scope,
@@ -1010,6 +1066,7 @@ class ChatAnalyzer:
                 "unique_users": int(event["unique_users"]),
                 "top_user_share": float(event["top_user_share"]),
                 "duplicate_share": float(event.get("duplicate_share", 0.0)),
+                "participant_coverage": float(event.get("participant_coverage", 0.0)),
                 "participant_dispersion": float(event.get("participant_dispersion", 0.0)),
                 "participant_identity_basis": str(
                     event.get("participant_identity_basis", "unknown")
@@ -1060,6 +1117,7 @@ class ChatAnalyzer:
             "unique_users": "고유 채팅 참여자 수",
             "top_user_share": "최다 참여자 점유율",
             "duplicate_share": "동일 행 비율",
+            "participant_coverage": "참여자 식별률",
             "participant_dispersion": "참여자 분산도",
             "participant_identity_basis": "참여자 식별 기준",
             "reaction_scope": "반응 범위",
@@ -1135,11 +1193,16 @@ class ChatAnalyzer:
             float(self.session_info.get("end_seconds", 0.0)),
             max((item["clip_end_seconds"] for item in moments), default=0.0),
         )
+        marker_frames = [round(item["peak_seconds"] * actual_fps) for item in moments]
+        duration_frames = max(
+            round(duration_seconds * actual_fps),
+            max((frame + 1 for frame in marker_frames), default=1),
+        )
 
         root = ET.Element("xmeml", version="5")
         sequence = ET.SubElement(root, "sequence")
         ET.SubElement(sequence, "name").text = "Clip Moment Markers"
-        ET.SubElement(sequence, "duration").text = str(round(duration_seconds * actual_fps))
+        ET.SubElement(sequence, "duration").text = str(duration_frames)
         rate = ET.SubElement(sequence, "rate")
         ET.SubElement(rate, "timebase").text = str(timebase)
         ET.SubElement(rate, "ntsc").text = "TRUE" if ntsc else "FALSE"
@@ -1151,8 +1214,7 @@ class ChatAnalyzer:
         ET.SubElement(timecode, "frame").text = "0"
         ET.SubElement(timecode, "displayformat").text = "NDF"
 
-        for moment in moments:
-            marker_frame = round(moment["peak_seconds"] * actual_fps)
+        for moment, marker_frame in zip(moments, marker_frames):
             marker = ET.SubElement(sequence, "marker")
             ET.SubElement(marker, "name").text = moment["label"]
             ET.SubElement(marker, "comment").text = (
@@ -1210,7 +1272,12 @@ class ChatAnalyzer:
             max((item["clip_end_seconds"] for item in moments), default=0.0),
             1.0 / actual_fps,
         )
-        duration_frames = max(1, round(duration_seconds * actual_fps))
+        marker_frames = [round(item["peak_seconds"] * actual_fps) for item in moments]
+        duration_frames = max(
+            1,
+            round(duration_seconds * actual_fps),
+            max((frame + 1 for frame in marker_frames), default=1),
+        )
         denominator = 24000 if abs(actual_fps - 24000 / 1001) < 0.01 else (
             30000 if abs(actual_fps - 30000 / 1001) < 0.01 else (
                 60000 if abs(actual_fps - 60000 / 1001) < 0.01 else round(actual_fps)
@@ -1250,8 +1317,7 @@ class ChatAnalyzer:
             start="0s",
             duration=sequence.attrib["duration"],
         )
-        for moment in moments:
-            frame = round(moment["peak_seconds"] * actual_fps)
+        for moment, frame in zip(moments, marker_frames):
             marker = ET.SubElement(
                 gap,
                 "marker",

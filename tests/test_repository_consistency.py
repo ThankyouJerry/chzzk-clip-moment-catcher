@@ -26,6 +26,16 @@ def test_only_one_entrypoint_and_one_pyinstaller_spec_exist():
     assert [path.name for path in ROOT.glob("*.spec")] == ["build.spec"]
 
 
+def test_local_builds_require_the_ci_python_version():
+    macos_script = (ROOT / "build_macos.sh").read_text(encoding="utf-8")
+    windows_script = (ROOT / "build_windows.bat").read_text(encoding="utf-8")
+
+    assert "python3.12" in macos_script
+    assert "sys.exit(0 if sys.version_info[:2] == (3, 12)" in macos_script
+    assert "py -3.12" in windows_script
+    assert "sys.exit(0 if sys.version_info[:2] == (3, 12)" in windows_script
+
+
 def test_ci_covers_qa_and_three_release_archives():
     workflow = (ROOT / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8")
 
@@ -60,6 +70,7 @@ def test_macos_packaging_stages_before_signing_and_smoke_checks():
     assert "xattr -cr" in script
     assert "codesign --verify --deep --strict" in script
     assert "QT_QPA_PLATFORM=offscreen" in script
+    assert '--smoke-test' in script
 
 
 def test_windows_packaging_launches_the_built_executable():
@@ -67,6 +78,7 @@ def test_windows_packaging_launches_the_built_executable():
 
     assert "Start-Process" in script
     assert "Start-Sleep -Seconds 5" in script
+    assert 'ArgumentList "--smoke-test"' in script
     assert "Packaged app exited during smoke test" in script
 
 
@@ -101,7 +113,16 @@ def test_readme_documents_real_csv_schema_and_export_boundaries():
 
 def test_repository_text_does_not_contain_stale_local_identity():
     forbidden = ("h" + "vs", "jerry" + "mouse", "your_" + "username")
-    ignored_dirs = {".git", ".pytest_cache", "__pycache__", "build", "dist", "venv", ".venv"}
+    ignored_dirs = {
+        ".git",
+        ".pytest_cache",
+        "__pycache__",
+        ".build-venv",
+        "build",
+        "dist",
+        "venv",
+        ".venv",
+    }
     for directory, dirnames, filenames in os.walk(ROOT):
         dirnames[:] = [name for name in dirnames if name not in ignored_dirs]
         for filename in filenames:

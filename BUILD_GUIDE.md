@@ -16,6 +16,8 @@
 
 ## 로컬 빌드
 
+CI와 동일한 Python 3.12가 필요합니다. macOS 스크립트는 `python3.12`를 우선 탐색하며, 다른 경로를 써야 하면 `PYTHON_BIN=/path/to/python3.12`로 지정합니다. 배포용 macOS ZIP은 사용 중인 Python 런타임 자체가 macOS 12와 호환되어야 하며, 스크립트가 번들 안의 모든 Mach-O 파일을 검사해 더 높은 버전 전용 런타임을 차단합니다.
+
 macOS:
 
 ```bash
@@ -30,7 +32,7 @@ build_windows.bat
 
 PyInstaller는 실행 중인 운영체제용 패키지만 만들 수 있습니다. macOS에서 Windows 실행 파일을 직접 만들지 않고 GitHub Actions의 Windows 러너를 사용합니다.
 
-두 로컬 빌드 스크립트는 `.build-venv` 전용 환경을 새로 만들고 테스트를 통과한 뒤 패키징합니다. 생성된 앱과 ZIP은 `scripts/verify_package_contents.py`로 검사해 테스트·예제·샘플 데이터·Python 소스가 포함되지 않았는지 확인합니다.
+두 로컬 빌드 스크립트는 `.build-venv` 전용 환경을 새로 만들고 테스트를 통과한 뒤 패키징합니다. 생성된 앱과 ZIP은 `scripts/verify_package_contents.py`로 검사해 테스트·예제·샘플 데이터·Python 소스가 포함되지 않았는지 확인합니다. 패키지 실행 확인은 창이 유지되는지만 보지 않고 작은 합성 CSV를 불러와 분석한 뒤 FCPXML을 내보내고 다시 파싱하는 기능 점검도 수행합니다.
 
 ## Actions 수동 실행
 
