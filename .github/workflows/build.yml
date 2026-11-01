@@ -65,7 +65,7 @@ jobs:
       - name: Create archive
         shell: pwsh
         run: Compress-Archive -Path dist\ChzzkClipMomentCatcher\* -DestinationPath ChzzkClipMomentCatcher-Windows-x86_64.zip
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ChzzkClipMomentCatcher-Windows-x86_64
           path: ChzzkClipMomentCatcher-Windows-x86_64.zip
@@ -100,7 +100,7 @@ jobs:
         run: |
           chmod +x package_macos.sh
           ./package_macos.sh dist/ChzzkClipMomentCatcher.app ChzzkClipMomentCatcher-macOS-${{ matrix.arch }}.zip
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ChzzkClipMomentCatcher-macOS-${{ matrix.arch }}
           path: ChzzkClipMomentCatcher-macOS-${{ matrix.arch }}.zip
